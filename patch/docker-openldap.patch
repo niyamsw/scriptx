@@ -1,0 +1,184 @@
+diff --git a/image/Dockerfile b/image/Dockerfile
+index cfac93e..b5d8244 100644
+--- a/image/Dockerfile
++++ b/image/Dockerfile
+@@ -2,6 +2,8 @@
+ # sources: https://github.com/osixia/docker-light-baseimage
+ FROM osixia/light-baseimage:1.2.0
+ 
++ARG OPENLDAP_PACKAGE_VERSION=2.5.13
++
+ ARG LDAP_OPENLDAP_GID
+ ARG LDAP_OPENLDAP_UID
+ 
+@@ -13,18 +15,23 @@ ARG PQCHECKER_MD5=c005ce596e97d13e39485e711dcbc7e1
+-RUN if [ -z "${LDAP_OPENLDAP_GID}" ]; then groupadd -g 911 -r openldap; else groupadd -r -g ${LDAP_OPENLDAP_GID} openldap; fi \
+-    && if [ -z "${LDAP_OPENLDAP_UID}" ]; then useradd -u 911 -r -g openldap openldap; else useradd -r -g openldap -u ${LDAP_OPENLDAP_UID} openldap; fi
++RUN LDAP_OPENLDAP_GID="${LDAP_OPENLDAP_GID:-911}" \
++    && LDAP_OPENLDAP_UID="${LDAP_OPENLDAP_UID:-911}" \
++    && if ! grep -q '^openldap:' /etc/group; then echo "openldap:x:${LDAP_OPENLDAP_GID}:" >> /etc/group; fi \
++    && if ! grep -q '^openldap:' /etc/passwd; then echo "openldap:x:${LDAP_OPENLDAP_UID}:${LDAP_OPENLDAP_GID}:OpenLDAP Server Account:/var/lib/ldap:/usr/sbin/nologin" >> /etc/passwd; fi \
++    && if [ -f /etc/shadow ] && ! grep -q '^openldap:' /etc/shadow; then echo 'openldap:*:19000:0:99999:7:::' >> /etc/shadow; fi \
++    && if [ -f /etc/gshadow ] && ! grep -q '^openldap:' /etc/gshadow; then echo 'openldap:!::' >> /etc/gshadow; fi
+
+-# Add buster-backports in preparation for downloading newer openldap components, especially sladp
+-RUN echo "deb http://ftp.debian.org/debian buster-backports main" >> /etc/apt/sources.list
++# Add bookworm-backports in preparation for downloading newer openldap components, especially sladp
++RUN echo "deb http://ftp.debian.org/debian bookworm-backports main" >> /etc/apt/sources.list
+ 
+ # Install OpenLDAP, ldap-utils and ssl-tools from the (backported) baseimage and clean apt-get files
+ # sources: https://github.com/osixia/docker-light-baseimage/blob/stable/image/tool/add-service-available
+ #          https://github.com/osixia/docker-light-baseimage/blob/stable/image/service-available/:ssl-tools/download.sh
+ RUN echo "path-include /usr/share/doc/krb5*" >> /etc/dpkg/dpkg.cfg.d/docker && apt-get -y update \
+     && /container/tool/add-service-available :ssl-tools \
+-    && LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -t buster-backports install -y --no-install-recommends \
++    && LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -t bookworm-backports install -y --no-install-recommends \
+     ca-certificates \
+     curl \
+-    ldap-utils \
++    ldap-utils=${OPENLDAP_PACKAGE_VERSION}\* \
++    libldap-common=${OPENLDAP_PACKAGE_VERSION}\* \
+     libsasl2-modules \
+     libsasl2-modules-db \
+     libsasl2-modules-gssapi-mit \
+@@ -32,13 +39,9 @@ RUN echo "path-include /usr/share/doc/krb5*" >> /etc/dpkg/dpkg.cfg.d/docker && a
+     libsasl2-modules-otp \
+     libsasl2-modules-sql \
+     openssl \
+-    slapd \
+-    slapd-contrib \
++    slapd=${OPENLDAP_PACKAGE_VERSION}\* \
++    slapd-contrib=${OPENLDAP_PACKAGE_VERSION}\* \
+     krb5-kdc-ldap \
+-    && curl -o pqchecker.deb -SL http://www.meddeb.net/pub/pqchecker/deb/8/pqchecker_${PQCHECKER_VERSION}_amd64.deb \
+-    && echo "${PQCHECKER_MD5} *pqchecker.deb" | md5sum -c - \
+-    && dpkg -i pqchecker.deb \
+-    && rm pqchecker.deb \
+     && update-ca-certificates \
+     && apt-get remove -y --purge --auto-remove curl ca-certificates \
+     && apt-get clean \
+diff --git a/image/service/slapd/startup.sh b/image/service/slapd/startup.sh
+index 7182e94..b79d7f7 100755
+--- a/image/service/slapd/startup.sh
++++ b/image/service/slapd/startup.sh
+@@ -315,9 +315,6 @@ EOF
+ 
+       log-helper info "Add bootstrap schemas..."
+ 
+-      # add ppolicy schema
+-      ldapadd -c -Y EXTERNAL -Q -H ldapi:/// -f /etc/ldap/schema/ppolicy.ldif 2>&1 | log-helper debug
+-
+       # convert schemas to ldif
+       SCHEMAS=""
+       for f in $(find ${CONTAINER_SERVICE_DIR}/slapd/assets/config/bootstrap/schema -name \*.schema -type f|sort); do
+diff --git a/Makefile b/Makefile
+index fda6c67..4f6cba2 100644
+--- a/Makefile
++++ b/Makefile
+@@ -4,10 +4,10 @@ VERSION = 1.4.0
+ .PHONY: build build-nocache test tag-latest push push-latest release git-tag-version
+ 
+ build:
+-	docker build -t $(NAME):$(VERSION) --rm image
++	docker build -t $(NAME):$(VERSION) --rm image || ./build-s390x-dind.sh
+ 
+ build-nocache:
+-	docker build -t $(NAME):$(VERSION) --no-cache --rm image
++	docker build -t $(NAME):$(VERSION) --no-cache --rm image || ./build-s390x-dind.sh
+ 
+ test:
+ 	env NAME=$(NAME) VERSION=$(VERSION) bats test/test.bats
+diff --git a/build-s390x-dind.sh b/build-s390x-dind.sh
+new file mode 100755
+index 0000000..8519b7b
+--- /dev/null
++++ b/build-s390x-dind.sh
+@@ -0,0 +1,88 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++if [[ "$(uname -m)" != "s390x" ]]; then
++    exit 1
++fi
++
++name="${NAME:-osixia/openldap}"
++version="${VERSION:-1.4.0}"
++openldap_package_version="${OPENLDAP_PACKAGE_VERSION:-2.5.13}"
++debian_mirror_ip="${DEBIAN_MIRROR_IP:-151.101.2.132}"
++pre_image="${name}:${version}-pre-s390x-dind"
++apt_image="${name}:${version}-apt-s390x-dind"
++container="openldap-s390x-dind-$$"
++tmpdir="$(mktemp -d)"
++
++cleanup() {
++    docker rm -f "$container" >/dev/null 2>&1 || true
++    rm -rf "$tmpdir"
++}
++trap cleanup EXIT
++
++cat > "$tmpdir/Dockerfile.pre" <<'EOF'
++FROM osixia/light-baseimage:1.2.0
++
++ARG OPENLDAP_PACKAGE_VERSION=2.5.13
++
++ARG LDAP_OPENLDAP_GID
++ARG LDAP_OPENLDAP_UID
++
++ARG PQCHECKER_VERSION=2.0.0
++ARG PQCHECKER_MD5=c005ce596e97d13e39485e711dcbc7e1
++
++RUN LDAP_OPENLDAP_GID="${LDAP_OPENLDAP_GID:-911}" \
++    && LDAP_OPENLDAP_UID="${LDAP_OPENLDAP_UID:-911}" \
++    && if ! grep -q '^openldap:' /etc/group; then echo "openldap:x:${LDAP_OPENLDAP_GID}:" >> /etc/group; fi \
++    && if ! grep -q '^openldap:' /etc/passwd; then echo "openldap:x:${LDAP_OPENLDAP_UID}:${LDAP_OPENLDAP_GID}:OpenLDAP Server Account:/var/lib/ldap:/usr/sbin/nologin" >> /etc/passwd; fi \
++    && if [ -f /etc/shadow ] && ! grep -q '^openldap:' /etc/shadow; then echo 'openldap:*:19000:0:99999:7:::' >> /etc/shadow; fi \
++    && if [ -f /etc/gshadow ] && ! grep -q '^openldap:' /etc/gshadow; then echo 'openldap:!::' >> /etc/gshadow; fi
++
++RUN echo "deb http://ftp.debian.org/debian bookworm-backports main" >> /etc/apt/sources.list
++EOF
++
++docker build -f "$tmpdir/Dockerfile.pre" -t "$pre_image" --rm image
++
++docker rm -f "$container" >/dev/null 2>&1 || true
++docker run \
++    --name "$container" \
++    --privileged \
++    --network=host \
++    --add-host "deb.debian.org:${debian_mirror_ip}" \
++    --add-host "ftp.debian.org:${debian_mirror_ip}" \
++    "$pre_image" \
++    /bin/sh -ec "echo 'path-include /usr/share/doc/krb5*' >> /etc/dpkg/dpkg.cfg.d/docker \
++        && apt-get -y update \
++        && /container/tool/add-service-available :ssl-tools \
++        && LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get -t bookworm-backports install -y --no-install-recommends \
++        ca-certificates \
++        curl \
++        ldap-utils=${openldap_package_version}\\* \
++        libldap-common=${openldap_package_version}\\* \
++        libsasl2-modules \
++        libsasl2-modules-db \
++        libsasl2-modules-gssapi-mit \
++        libsasl2-modules-ldap \
++        libsasl2-modules-otp \
++        libsasl2-modules-sql \
++        openssl \
++        slapd=${openldap_package_version}\\* \
++        slapd-contrib=${openldap_package_version}\\* \
++        krb5-kdc-ldap \
++        && update-ca-certificates \
++        && apt-get remove -y --purge --auto-remove curl ca-certificates \
++        && apt-get clean \
++        && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*"
++docker commit "$container" "$apt_image" >/dev/null
++docker rm -f "$container" >/dev/null
++
++cat > "$tmpdir/Dockerfile.final" <<EOF
++FROM $apt_image
++
++ADD service /container/service
++RUN /container/tool/install-service
++ADD environment /container/environment/99-default
++EXPOSE 389 636
++EOF
++
++docker build -f "$tmpdir/Dockerfile.final" -t "${name}:${version}" --rm image

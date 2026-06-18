@@ -1,0 +1,662 @@
+diff --git a/.buildkite/scripts/steps/create_dra.sh b/.buildkite/scripts/steps/create_dra.sh
+index a37e32519..a12e6c664 100755
+--- a/.buildkite/scripts/steps/create_dra.sh
++++ b/.buildkite/scripts/steps/create_dra.sh
+@@ -48,7 +48,7 @@ fi
+ # Extract each platform specific zip file & combine to an 'uber' zip file.
+ rm -rf build/temp
+ mkdir -p build/temp
+-for it in darwin-aarch64 darwin-x86_64 linux-aarch64 linux-x86_64 windows-x86_64; do
++for it in darwin-aarch64 darwin-x86_64 linux-aarch64 linux-s390x linux-x86_64 windows-x86_64; do
+   unzip -o build/distributions/ml-cpp-${VERSION}-${it}.zip -d build/temp;
+ done
+ cd build/temp
+diff --git a/3rd_party/3rd_party.cmake b/3rd_party/3rd_party.cmake
+index 51acf9bf8..ce676c811 100644
+--- a/3rd_party/3rd_party.cmake
++++ b/3rd_party/3rd_party.cmake
+@@ -72,6 +72,8 @@ elseif ("${HOST_SYSTEM_NAME}" STREQUAL "linux")
+     set(BOOST_COMPILER "gcc${CMAKE_CXX_COMPILER_VERSION_MAJOR}")
+     if( "${ARCH}" STREQUAL "aarch64" )
+       set(BOOST_ARCH "a64")
++    elseif( "${ARCH}" STREQUAL "s390x" )
++      set(BOOST_ARCH "s64")
+     else()
+       set(BOOST_ARCH "x64")
+       set(MKL_LOCATION "/usr/local/gcc133/lib")
+@@ -93,7 +95,14 @@ elseif ("${HOST_SYSTEM_NAME}" STREQUAL "linux")
+     set(OMP_EXTENSION ".so.1")
+     set(ZLIB_LOCATION)
+     set(TORCH_LIBRARIES "libtorch_cpu" "libc10")
+-    set(TORCH_LOCATION "/usr/local/gcc133/lib")
++    if(DEFINED ML_PYTORCH_LIB_DIR AND NOT "${ML_PYTORCH_LIB_DIR}" STREQUAL "")
++      set(TORCH_LOCATION "${ML_PYTORCH_LIB_DIR}")
++    elseif(DEFINED ENV{ML_PYTORCH_LIB_DIR} AND
++           NOT "$ENV{ML_PYTORCH_LIB_DIR}" STREQUAL "")
++      set(TORCH_LOCATION "$ENV{ML_PYTORCH_LIB_DIR}")
++    else()
++      set(TORCH_LOCATION "/usr/local/gcc133/lib")
++    endif()
+     set(TORCH_EXTENSION ".so")
+   elseif("$ENV{CPP_CROSS_COMPILE}" STREQUAL "macosx")
+     message(STATUS "3rd_party: Cross compile for macosx: Copying macOS 3rd party libraries")
+diff --git a/3rd_party/CMakeLists.txt b/3rd_party/CMakeLists.txt
+index f2b092f91..684a9fef8 100644
+--- a/3rd_party/CMakeLists.txt
++++ b/3rd_party/CMakeLists.txt
+@@ -21,8 +21,16 @@ add_custom_target(licenses ALL
+ # Install 3rd party libraries in our build tree
+ # as part of the CMake configuration step - avoiding
+ # the need for it to be done on every build
++set(ML_3RD_PARTY_CMAKE_ARGS
++    -DINSTALL_DIR=${INSTALL_DIR}
++    -DCMAKE_CXX_COMPILER_VERSION_MAJOR=${CMAKE_CXX_COMPILER_VERSION_MAJOR}
++    )
++if(DEFINED ML_PYTORCH_LIB_DIR AND NOT "${ML_PYTORCH_LIB_DIR}" STREQUAL "")
++  list(APPEND ML_3RD_PARTY_CMAKE_ARGS
++       -DML_PYTORCH_LIB_DIR=${ML_PYTORCH_LIB_DIR})
++endif()
+ execute_process(
+-    COMMAND ${CMAKE_COMMAND} -DINSTALL_DIR=${INSTALL_DIR} -DCMAKE_CXX_COMPILER_VERSION_MAJOR=${CMAKE_CXX_COMPILER_VERSION_MAJOR} -P ./3rd_party.cmake
++    COMMAND ${CMAKE_COMMAND} ${ML_3RD_PARTY_CMAKE_ARGS} -P ./3rd_party.cmake
+     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+ )
+ 
+diff --git a/build.gradle b/build.gradle
+index 7332353ee..23fd3bf90 100644
+--- a/build.gradle
++++ b/build.gradle
+@@ -55,8 +55,8 @@ if (cppCrossCompile == null) {
+     cppCrossCompile = ''
+   }
+ }
+-if (cppCrossCompile != '' && cppCrossCompile != 'macosx') {
+-  throw new GradleException("CPP_CROSS_COMPILE property must be empty or 'macosx'")
++if (cppCrossCompile != '' && cppCrossCompile != 'macosx' && cppCrossCompile != 'x86_64' && cppCrossCompile != 'aarch64' && cppCrossCompile != 's390x') {
++  throw new GradleException("CPP_CROSS_COMPILE property must be empty, 'macosx', 'x86_64', 'aarch64' or 's390x'")
+ }
+ 
+ String osArch = System.properties['os.arch']
+@@ -66,6 +66,8 @@ if (osArch == 'amd64') {
+   osArch = 'x86_64'
+ } else if (osArch == 'arm64') {
+   osArch = 'aarch64'
++} else if (osArch == 's390') {
++  osArch = 's390x'
+ }
+ String artifactClassifier
+ if (isWindows) {
+@@ -86,6 +88,14 @@ if (isWindows) {
+ // where the desired build type is specified at build time with the '--config' option. (It's safe to always specify the
+ // '--config' option as it will simply be ignored by a single-config generated build system)
+ String cmakeFlags = '--no-warn-unused-cli -D CMAKE_TOOLCHAIN_FILE=cmake/' + artifactClassifier + '.cmake'
++// Append any extra CMake flags from the environment.
++String envCmakeFlags = System.env.CMAKE_FLAGS
++if (envCmakeFlags != null && !envCmakeFlags.isEmpty()) {
++  envCmakeFlags = envCmakeFlags.replaceAll(/-DCMAKE_TOOLCHAIN_FILE=\S+/, '').trim()
++  if (!envCmakeFlags.isEmpty()) {
++    cmakeFlags += ' ' + envCmakeFlags
++  }
++}
+ project.ext.cmakeBuildDir = "cmake-build-relwithdebinfo"
+ project.ext.cmakeBuildType = "RelWithDebInfo"
+ if (mlDebug.toBoolean()) {
+@@ -111,7 +121,12 @@ if (isWindows && msystem != 'MINGW64') {
+   project.ext.stripCmd = isWindows ? 'true' : "dev-tools/strip_binaries.sh"
+ }
+ 
+-project.ext.numCpus = Runtime.runtime.availableProcessors()
++String cmakeParallelLevel = System.env.CMAKE_BUILD_PARALLEL_LEVEL
++if (cmakeParallelLevel != null && cmakeParallelLevel ==~ /\d+/) {
++  project.ext.numCpus = cmakeParallelLevel.toInteger()
++} else {
++  project.ext.numCpus = Runtime.runtime.availableProcessors()
++}
+ project.ext.makeEnvironment = [ 'CPP_CROSS_COMPILE': cppCrossCompile,
+                                 'VERSION_QUALIFIER': versionQualifier,
+                                 'SNAPSHOT': (isSnapshot ? 'yes' : 'no'),
+@@ -276,7 +291,7 @@ class DownloadPlatformSpecific extends DefaultTask {
+   File extractDirectory
+ 
+   @Input
+-  List<String> platforms = [ 'darwin-aarch64', 'darwin-x86_64', 'linux-aarch64', 'linux-x86_64', 'windows-x86_64' ]
++  List<String> platforms = [ 'darwin-aarch64', 'darwin-x86_64', 'linux-aarch64', 'linux-s390x', 'linux-x86_64', 'windows-x86_64' ]
+ 
+   DownloadPlatformSpecific() {
+     // Always run this task, in case the platform-specific zips have changed
+@@ -444,7 +459,7 @@ task upload(type: UploadS3Task) {
+   bucket='prelert-artifacts'
+   // Only upload the platform-specific artifacts in this task
+   def zipFileDir = fileTree("${buildDir}/distributions").matching {
+-    include "*-aarch64.zip", "*-x86_64.zip"
++    include "*-aarch64.zip", "*-s390x.zip", "*-x86_64.zip"
+   }
+   for (zipFile in zipFileDir) {
+     upload zipFile, "maven/${artifactGroupPath}/${artifactName}/${project.version}/${zipFile.name}"
+diff --git a/cmake/architecture/aarch64.cmake b/cmake/architecture/aarch64.cmake
+index 39a7f0d86..86cc8df27 100644
+--- a/cmake/architecture/aarch64.cmake
++++ b/cmake/architecture/aarch64.cmake
+@@ -10,4 +10,5 @@
+ #
+ 
+ message(STATUS "aarch64 detected for target")
++set(ML_ARCH_PROCESSOR "aarch64")
+ set(ARCHCFLAGS "-march=armv8-a+crc+crypto" "-ffp-contract=on") 
+diff --git a/cmake/architecture/s390x.cmake b/cmake/architecture/s390x.cmake
+new file mode 100644
+index 000000000..f85715031
+--- /dev/null
++++ b/cmake/architecture/s390x.cmake
+@@ -0,0 +1,14 @@
++#
++# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++# or more contributor license agreements. Licensed under the Elastic License
++# 2.0 and the following additional limitation. Functionality enabled by the
++# files subject to the Elastic License 2.0 may only be used in production when
++# invoked by an Elasticsearch process with a license key installed that permits
++# use of machine learning features. You may not use this file except in
++# compliance with the Elastic License 2.0 and the foregoing additional
++# limitation.
++#
++
++message(STATUS "s390x detected for target")
++set(ML_ARCH_PROCESSOR "s390x")
++set(ARCHCFLAGS "")
+diff --git a/cmake/architecture/x86_64.cmake b/cmake/architecture/x86_64.cmake
+index 1b9821d66..f82c11205 100644
+--- a/cmake/architecture/x86_64.cmake
++++ b/cmake/architecture/x86_64.cmake
+@@ -10,6 +10,7 @@
+ #
+ 
+ message(STATUS "x86_64 detected for target")
++set(ML_ARCH_PROCESSOR "x86_64")
+ set (ARCHCFLAGS "-msse4.2")
+ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+   list(APPEND ARCHCFLAGS "-mfpmath=sse")
+diff --git a/cmake/compiler/gcc.cmake b/cmake/compiler/gcc.cmake
+index 3aff5fa9e..38c3b2fe2 100644
+--- a/cmake/compiler/gcc.cmake
++++ b/cmake/compiler/gcc.cmake
+@@ -10,20 +10,41 @@
+ #
+ 
+ # which compilers to use for C and C++
+-set(CMAKE_C_COMPILER   "/usr/local/gcc133/bin/gcc")
+-set(CMAKE_CXX_COMPILER "/usr/local/gcc133/bin/g++")
++if(EXISTS "/usr/local/gcc133/bin/gcc" AND EXISTS "/usr/local/gcc133/bin/g++")
++  set(CMAKE_C_COMPILER   "/usr/local/gcc133/bin/gcc")
++  set(CMAKE_CXX_COMPILER "/usr/local/gcc133/bin/g++")
++else()
++  find_program(ML_GCC_COMPILER gcc REQUIRED)
++  find_program(ML_GXX_COMPILER g++ REQUIRED)
++  set(CMAKE_C_COMPILER   "${ML_GCC_COMPILER}")
++  set(CMAKE_CXX_COMPILER "${ML_GXX_COMPILER}")
++endif()
+ 
+ # Detect architecture from ARCHCFLAGS (set by architecture/*.cmake files)
+-if(ARCHCFLAGS MATCHES "-march=armv8")
++if(ML_ARCH_PROCESSOR)
++  set(CMAKE_SYSTEM_PROCESSOR "${ML_ARCH_PROCESSOR}")
++elseif(ARCHCFLAGS MATCHES "-march=armv8")
+   set(CMAKE_SYSTEM_PROCESSOR "aarch64")
+ else()
+   set(CMAKE_SYSTEM_PROCESSOR "x86_64")
+ endif()
+ 
+-set(CMAKE_AR       "/usr/local/gcc133/bin/ar")
+-set(CMAKE_RANLIB   "/usr/local/gcc133/bin/ranlib")
+-set(CMAKE_STRIP    "/usr/local/gcc133/bin/strip")
+-set(CMAKE_LINKER   "/usr/local/gcc133/bin/ld")
++if(EXISTS "/usr/local/gcc133/bin/ar" AND EXISTS "/usr/local/gcc133/bin/ranlib" AND
++   EXISTS "/usr/local/gcc133/bin/strip" AND EXISTS "/usr/local/gcc133/bin/ld")
++  set(CMAKE_AR       "/usr/local/gcc133/bin/ar")
++  set(CMAKE_RANLIB   "/usr/local/gcc133/bin/ranlib")
++  set(CMAKE_STRIP    "/usr/local/gcc133/bin/strip")
++  set(CMAKE_LINKER   "/usr/local/gcc133/bin/ld")
++else()
++  find_program(ML_AR ar REQUIRED)
++  find_program(ML_RANLIB ranlib REQUIRED)
++  find_program(ML_STRIP strip REQUIRED)
++  find_program(ML_LINKER ld REQUIRED)
++  set(CMAKE_AR       "${ML_AR}")
++  set(CMAKE_RANLIB   "${ML_RANLIB}")
++  set(CMAKE_STRIP    "${ML_STRIP}")
++  set(CMAKE_LINKER   "${ML_LINKER}")
++endif()
+ 
+ SET(CMAKE_CXX_ARCHIVE_CREATE "<CMAKE_AR> -ru <TARGET> <OBJECTS>")
+ 
+@@ -51,4 +72,3 @@ list(APPEND ML_CXX_FLAGS
+   "-fvisibility-inlines-hidden"
+   )
+ 
+-
+diff --git a/cmake/linux-s390x.cmake b/cmake/linux-s390x.cmake
+new file mode 100644
+index 000000000..be65950c9
+--- /dev/null
++++ b/cmake/linux-s390x.cmake
+@@ -0,0 +1,26 @@
++#
++# Copyright Elasticsearch B.V. and/or licensed to Elasticsearch B.V. under one
++# or more contributor license agreements. Licensed under the Elastic License
++# 2.0 and the following additional limitation. Functionality enabled by the
++# files subject to the Elastic License 2.0 may only be used in production when
++# invoked by an Elasticsearch process with a license key installed that permits
++# use of machine learning features. You may not use this file except in
++# compliance with the Elastic License 2.0 and the foregoing additional
++# limitation.
++#
++
++set(CPP_PLATFORM_HOME $ENV{CPP_SRC_HOME}/build/distribution/platform/linux-s390x)
++
++message(STATUS "CMAKE_SYSTEM_NAME ${CMAKE_SYSTEM_NAME}")
++
++# this must be first
++include("${CMAKE_CURRENT_LIST_DIR}/functions.cmake")
++
++# include linux specific settings
++include("${CMAKE_CURRENT_LIST_DIR}/os/linux.cmake")
++
++# set the architecture bits
++include("${CMAKE_CURRENT_LIST_DIR}/architecture/s390x.cmake")
++
++# include gcc specific settings
++include("${CMAKE_CURRENT_LIST_DIR}/compiler/gcc.cmake")
+diff --git a/cmake/variables.cmake b/cmake/variables.cmake
+index 3f42b3cd9..08a06a39b 100644
+--- a/cmake/variables.cmake
++++ b/cmake/variables.cmake
+@@ -66,6 +66,9 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+   endif()
+ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+   set(ML_BOOST_COMPILER_VER "gcc${CMAKE_CXX_COMPILER_VERSION_MAJOR}")
++  if(NOT Boost_ROOT AND NOT DEFINED ENV{BOOST_ROOT})
++    set(Boost_ROOT /usr/local/gcc133)
++  endif()
+ elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+   string(CONCAT BOOST_VCVER "vc" ${VCVER_MAJOR} ${VCVER_MINOR} )
+   string(SUBSTRING ${BOOST_VCVER} 0 5 BOOST_VCVER)
+@@ -98,13 +101,70 @@ else()
+   set(ML_LIBEXT ".lib")
+ endif()
+ 
+-set(TORCH_INC "${ML_BASE_PATH}/include/pytorch")
++if(DEFINED ML_PYTORCH_HOME)
++  set(TORCH_INC
++    "${ML_PYTORCH_HOME}"
++    "${ML_PYTORCH_HOME}/torch/csrc/api/include"
++    "${ML_PYTORCH_HOME}/aten/src"
++    "${ML_PYTORCH_HOME}/build"
++    "${ML_PYTORCH_HOME}/build/aten/src"
++    )
++elseif(DEFINED ENV{ML_PYTORCH_HOME})
++  set(ML_PYTORCH_HOME "$ENV{ML_PYTORCH_HOME}")
++  set(TORCH_INC
++    "${ML_PYTORCH_HOME}"
++    "${ML_PYTORCH_HOME}/torch/csrc/api/include"
++    "${ML_PYTORCH_HOME}/aten/src"
++    "${ML_PYTORCH_HOME}/build"
++    "${ML_PYTORCH_HOME}/build/aten/src"
++    )
++else()
++  set(TORCH_INC "${ML_BASE_PATH}/include/pytorch")
++endif()
++if(ML_PYTORCH_HOME AND NOT EXISTS "${ML_PYTORCH_HOME}/c10/macros/cmake_macros.h")
++  set(ML_PYTORCH_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/pytorch_generated")
++  file(MAKE_DIRECTORY "${ML_PYTORCH_GENERATED_INCLUDE_DIR}/c10/macros")
++  file(WRITE "${ML_PYTORCH_GENERATED_INCLUDE_DIR}/c10/macros/cmake_macros.h" [=[
++#ifndef C10_MACROS_CMAKE_MACROS_H_
++#define C10_MACROS_CMAKE_MACROS_H_
++#define C10_BUILD_SHARED_LIBS 1
++#endif // C10_MACROS_CMAKE_MACROS_H_
++]=])
++  list(APPEND TORCH_INC "${ML_PYTORCH_GENERATED_INCLUDE_DIR}")
++endif()
++
++if(ML_PYTORCH_HOME AND
++   EXISTS "${ML_PYTORCH_HOME}/torch/csrc/api/include/torch/version.h.in" AND
++   NOT EXISTS "${ML_PYTORCH_HOME}/torch/csrc/api/include/torch/version.h")
++  set(ML_PYTORCH_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/pytorch_generated")
++  file(MAKE_DIRECTORY "${ML_PYTORCH_GENERATED_INCLUDE_DIR}/torch/csrc/api/include/torch")
++  file(READ "${ML_PYTORCH_HOME}/version.txt" ML_PYTORCH_VERSION)
++  string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)" ML_PYTORCH_VERSION_MATCH "${ML_PYTORCH_VERSION}")
++  if(NOT ML_PYTORCH_VERSION_MATCH)
++    message(FATAL_ERROR "Unable to parse PyTorch version from ${ML_PYTORCH_HOME}/version.txt")
++  endif()
++  set(TORCH_VERSION_MAJOR "${CMAKE_MATCH_1}")
++  set(TORCH_VERSION_MINOR "${CMAKE_MATCH_2}")
++  set(TORCH_VERSION_PATCH "${CMAKE_MATCH_3}")
++  configure_file("${ML_PYTORCH_HOME}/torch/csrc/api/include/torch/version.h.in"
++    "${ML_PYTORCH_GENERATED_INCLUDE_DIR}/torch/csrc/api/include/torch/version.h" @ONLY)
++  list(APPEND TORCH_INC "${ML_PYTORCH_GENERATED_INCLUDE_DIR}")
++endif()
++
++if(DEFINED ML_PYTORCH_LIB_DIR)
++  set(TORCH_LIB_DIR "${ML_PYTORCH_LIB_DIR}")
++elseif(DEFINED ENV{ML_PYTORCH_LIB_DIR})
++  set(TORCH_LIB_DIR "$ENV{ML_PYTORCH_LIB_DIR}")
++else()
++  set(TORCH_LIB_DIR "${ML_BASE_PATH}/lib")
++endif()
++
+ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
+-  set(TORCH_LIB "${ML_BASE_PATH}/lib/torch_cpu${ML_LIBEXT}")
+-  set(C10_LIB   "${ML_BASE_PATH}/lib/c10${ML_LIBEXT}")
++  set(TORCH_LIB "${TORCH_LIB_DIR}/torch_cpu${ML_LIBEXT}")
++  set(C10_LIB   "${TORCH_LIB_DIR}/c10${ML_LIBEXT}")
+ else()
+-  set(TORCH_LIB "${ML_BASE_PATH}/lib/libtorch_cpu${ML_LIBEXT}")
+-  set(C10_LIB   "${ML_BASE_PATH}/lib/libc10${ML_LIBEXT}")
++  set(TORCH_LIB "${TORCH_LIB_DIR}/libtorch_cpu${ML_LIBEXT}")
++  set(C10_LIB   "${TORCH_LIB_DIR}/libc10${ML_LIBEXT}")
+ endif()
+ 
+ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+diff --git a/include/core/CHashing.h b/include/core/CHashing.h
+index 617f837e7..8be2bbd09 100644
+--- a/include/core/CHashing.h
++++ b/include/core/CHashing.h
+@@ -304,10 +304,11 @@ public:
+     //!   reinterpret_cast<std::size_t>(key) & 0x3 == 0
+     //! \endcode
+     //!
+-    //! Furthermore, you should not serialize the hashed values because
+-    //! they will be different on machines with different endian
+-    //! conventions. If you aren't sure that you can safely use this
+-    //! version then use safeMurmurHash32.
++    //! Furthermore, you should not serialize the hashed values because they
++    //! will be different on machines with different endian conventions. On
++    //! big-endian builds this delegates to safeMurmurHash32 so persisted hash
++    //! values match little-endian builds. If you aren't sure that you can
++    //! safely use this version then use safeMurmurHash32.
+     static std::uint32_t murmurHash32(const void* key, int length, std::uint32_t seed);
+ 
+     //! MurmurHash2: safe 32-bit hash.
+@@ -336,10 +337,11 @@ public:
+     //!   reinterpret_cast<std::size_t>(key) & 0x7 == 0
+     //! \endcode
+     //!
+-    //! Furthermore, you should not serialize the hashed values because
+-    //! they will be different on machines with different endian
+-    //! conventions. If you aren't sure that you can safely use this
+-    //! version then use safeMurmurHash64.
++    //! Furthermore, you should not serialize the hashed values because they
++    //! will be different on machines with different endian conventions. On
++    //! big-endian builds this delegates to safeMurmurHash64 so persisted hash
++    //! values match little-endian builds. If you aren't sure that you can
++    //! safely use this version then use safeMurmurHash64.
+     static std::uint64_t murmurHash64(const void* key, int length, std::uint64_t seed);
+ 
+     //! MurmurHash2: safe 64-bit hash.
+diff --git a/include/core/CIEEE754.h b/include/core/CIEEE754.h
+index 4774d8b39..afaf55628 100644
+--- a/include/core/CIEEE754.h
++++ b/include/core/CIEEE754.h
+@@ -45,7 +45,8 @@ public:
+     //! as an integer.
+     //! \note The actual "exponent" is "exponent - 1022" in two's complement.
+     struct SDoubleRep {
+-#ifdef __sparc                         // Add any other big endian architectures
++#if defined(__sparc) || (defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
++                         __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+         std::uint64_t s_Sign : 1;      // sign bit
+         std::uint64_t s_Exponent : 11; // exponent
+         std::uint64_t s_Mantissa : 52; // mantissa
+@@ -63,13 +64,13 @@ public:
+     //! \note This is closely related to std::frexp for double but returns
+     //! the mantissa interpreted as an integer.
+     static void decompose(double value, std::uint64_t& mantissa, int& exponent) {
+-        SDoubleRep parsed;
+-        static_assert(sizeof(double) == sizeof(SDoubleRep),
+-                      "SDoubleRep definition unsuitable for memcpy to double");
++        std::uint64_t bits;
++        static_assert(sizeof(double) == sizeof(std::uint64_t),
++                      "uint64_t definition unsuitable for memcpy to double");
+         // Use memcpy() rather than union to adhere to strict aliasing rules
+-        std::memcpy(&parsed, &value, sizeof(double));
+-        exponent = static_cast<int>(parsed.s_Exponent) - 1022;
+-        mantissa = parsed.s_Mantissa;
++        std::memcpy(&bits, &value, sizeof(double));
++        exponent = static_cast<int>((bits >> 52) & 0x7FF) - 1022;
++        mantissa = bits & IEEE754_MANTISSA_MASK;
+     }
+ 
+     //! Drop \p bits trailing bits from the mantissa of \p value in a stable way
+diff --git a/include/maths/common/CLbfgs.h b/include/maths/common/CLbfgs.h
+index 1ac48444e..514991ce9 100644
+--- a/include/maths/common/CLbfgs.h
++++ b/include/maths/common/CLbfgs.h
+@@ -258,7 +258,7 @@ private:
+         double fs{f(xs)};
+ 
+         for (std::size_t i = 0; i < MAXIMUM_BACK_TRACKING_ITERATIONS &&
+-                                fs - m_Fx > this->minimumDecrease(s);
++                                m_Fx - fs < this->minimumDecrease(s);
+              ++i) {
+             s *= m_StepScale;
+             xs = m_X - s * m_P;
+diff --git a/include/maths/common/CTools.h b/include/maths/common/CTools.h
+index ec15728c1..fe52ffeca 100644
+--- a/include/maths/common/CTools.h
++++ b/include/maths/common/CTools.h
+@@ -328,18 +328,16 @@ private:
+             //      double value and fastLog uses the same approach
+             //      to extract the mantissa.
+             std::uint64_t dx = 0x10000000000000ull / BINS;
+-            core::CIEEE754::SDoubleRep x;
+-            x.s_Sign = 0;
+-            x.s_Mantissa = (dx / 2) & core::CIEEE754::IEEE754_MANTISSA_MASK;
+-            x.s_Exponent = 1022;
++            std::uint64_t mantissa{(dx / 2) & core::CIEEE754::IEEE754_MANTISSA_MASK};
+             for (std::size_t i = 0; i < BINS;
+-                 ++i, x.s_Mantissa = (x.s_Mantissa + dx) & core::CIEEE754::IEEE754_MANTISSA_MASK) {
++                 ++i, mantissa = (mantissa + dx) & core::CIEEE754::IEEE754_MANTISSA_MASK) {
++                std::uint64_t bits{(std::uint64_t{1022} << 52) | mantissa};
+                 double value;
+-                static_assert(sizeof(double) == sizeof(core::CIEEE754::SDoubleRep),
+-                              "SDoubleRep definition unsuitable for memcpy to double");
++                static_assert(sizeof(double) == sizeof(std::uint64_t),
++                              "uint64_t definition unsuitable for memcpy to double");
+                 // Use memcpy() rather than union to adhere to strict
+                 // aliasing rules
+-                std::memcpy(&value, &x, sizeof(double));
++                std::memcpy(&value, &bits, sizeof(double));
+                 m_Table[i] = stable(std::log2(value));
+             }
+         }
+diff --git a/lib/core/CCrashHandler_Linux.cc b/lib/core/CCrashHandler_Linux.cc
+index 8fe4508f1..ad4982522 100644
+--- a/lib/core/CCrashHandler_Linux.cc
++++ b/lib/core/CCrashHandler_Linux.cc
+@@ -45,6 +45,8 @@ void crashHandler(int sig, siginfo_t* info, void* context) {
+     errorAddress = reinterpret_cast<void*>(uContext->uc_mcontext.arm_pc);
+ #elif defined(__aarch64__)
+     errorAddress = reinterpret_cast<void*>(uContext->uc_mcontext.pc);
++#elif defined(__s390x__)
++    errorAddress = reinterpret_cast<void*>(uContext->uc_mcontext.psw.addr);
+ #elif defined(__ppc__) || defined(__powerpc) || defined(__powerpc__) || defined(__POWERPC__)
+     errorAddress = reinterpret_cast<void*>(uContext->uc_mcontext.regs->nip);
+ #else
+diff --git a/lib/core/CHashing.cc b/lib/core/CHashing.cc
+index b8a413025..0eeb26e01 100644
+--- a/lib/core/CHashing.cc
++++ b/lib/core/CHashing.cc
+@@ -294,6 +294,10 @@ void CHashing::CUniversalHash::generateHashes(std::size_t k,
+ }
+ 
+ std::uint32_t CHashing::murmurHash32(const void* key, int length, std::uint32_t seed) {
++#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
++    __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
++    return CHashing::safeMurmurHash32(key, length, seed);
++#else
+     constexpr std::uint32_t m = 0x5bd1e995;
+     constexpr int r = 24;
+ 
+@@ -340,6 +344,7 @@ std::uint32_t CHashing::murmurHash32(const void* key, int length, std::uint32_t
+     h ^= h >> 15;
+ 
+     return h;
++#endif
+ }
+ 
+ std::uint32_t CHashing::safeMurmurHash32(const void* key, int length, std::uint32_t seed) {
+@@ -393,6 +398,10 @@ std::uint32_t CHashing::safeMurmurHash32(const void* key, int length, std::uint3
+ }
+ 
+ std::uint64_t CHashing::murmurHash64(const void* key, int length, std::uint64_t seed) {
++#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
++    __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
++    return CHashing::safeMurmurHash64(key, length, seed);
++#else
+     constexpr std::uint64_t m = 0xc6a4a7935bd1e995ULL;
+     constexpr int r = 47;
+ 
+@@ -451,6 +460,7 @@ std::uint64_t CHashing::murmurHash64(const void* key, int length, std::uint64_t
+     h ^= h >> r;
+ 
+     return h;
++#endif
+ }
+ 
+ std::uint64_t CHashing::safeMurmurHash64(const void* key, int length, std::uint64_t seed) {
+diff --git a/lib/core/CIEEE754.cc b/lib/core/CIEEE754.cc
+index 0b8815561..fd602194c 100644
+--- a/lib/core/CIEEE754.cc
++++ b/lib/core/CIEEE754.cc
+@@ -46,12 +46,14 @@ double CIEEE754::round(double value, EPrecision precision) {
+ }
+ 
+ double CIEEE754::dropbits(double value, int bits) {
+-    SDoubleRep parsed;
+-    static_assert(sizeof(double) == sizeof(SDoubleRep),
+-                  "SDoubleRep definition unsuitable for memcpy to double");
+-    std::memcpy(&parsed, &value, sizeof(double));
+-    parsed.s_Mantissa &= ((IEEE754_MANTISSA_MASK << bits) & IEEE754_MANTISSA_MASK);
+-    std::memcpy(&value, &parsed, sizeof(double));
++    std::uint64_t rawBits;
++    static_assert(sizeof(double) == sizeof(std::uint64_t),
++                  "uint64_t definition unsuitable for memcpy to double");
++    std::memcpy(&rawBits, &value, sizeof(double));
++    rawBits = (rawBits & ~IEEE754_MANTISSA_MASK) |
++              ((rawBits & IEEE754_MANTISSA_MASK) &
++               ((IEEE754_MANTISSA_MASK << bits) & IEEE754_MANTISSA_MASK));
++    std::memcpy(&value, &rawBits, sizeof(double));
+     return value;
+ }
+ }
+diff --git a/lib/maths/common/unittest/CLbfgsTest.cc b/lib/maths/common/unittest/CLbfgsTest.cc
+index 38076718c..207a92857 100644
+--- a/lib/maths/common/unittest/CLbfgsTest.cc
++++ b/lib/maths/common/unittest/CLbfgsTest.cc
+@@ -153,7 +153,7 @@ BOOST_AUTO_TEST_CASE(testSingularHessian) {
+ 
+         TVector x;
+         double fx;
+-        std::tie(x, fx) = lbfgs.minimize(f, g, points[x0[0]], 1e-8, 75);
++        std::tie(x, fx) = lbfgs.minimize(f, g, points[x0[0]], 1e-10, 200);
+ 
+         // Test we're near the minimum.
+         TVector eps{10};
+diff --git a/lib/maths/common/unittest/CToolsTest.cc b/lib/maths/common/unittest/CToolsTest.cc
+index 12a648518..6ee18ca7e 100644
+--- a/lib/maths/common/unittest/CToolsTest.cc
++++ b/lib/maths/common/unittest/CToolsTest.cc
+@@ -31,6 +31,9 @@
+ 
+ #include <array>
+ #include <bitset>
++#include <climits>
++#include <cstdint>
++#include <cstring>
+ #include <numeric>
+ 
+ BOOST_AUTO_TEST_SUITE(CToolsTest)
+@@ -350,16 +353,19 @@ private:
+     const maths::common::CMixtureDistribution<T>& m_Mixture;
+ };
+ 
+-void printByte(const unsigned char& byte, std::ostream& o) {
+-    o << std::bitset<CHAR_BIT>{byte};
++void printByte(std::uint64_t bits, std::size_t byte, std::ostream& o) {
++    o << std::bitset<CHAR_BIT>{static_cast<unsigned char>(bits >> (CHAR_BIT * byte))};
+ }
+ 
+-template<typename T>
+-std::string printBits(const T& t) {
++std::string printBits(double value) {
++    std::uint64_t bits;
++    static_assert(sizeof(bits) == sizeof(value),
++                  "uint64_t definition unsuitable for memcpy to double");
++    std::memcpy(&bits, &value, sizeof(bits));
++
+     std::ostringstream o;
+-    const unsigned char* byte{reinterpret_cast<const unsigned char*>(&t)};
+-    for (std::size_t s = 0; s < sizeof(t); ++s, ++byte) {
+-        printByte(*byte, o);
++    for (std::size_t byte = 0; byte < sizeof(bits); ++byte) {
++        printByte(bits, byte, o);
+     }
+     return o.str();
+ }
+diff --git a/lib/seccomp/CSystemCallFilter_Linux.cc b/lib/seccomp/CSystemCallFilter_Linux.cc
+index 9d5397100..479d5e23e 100644
+--- a/lib/seccomp/CSystemCallFilter_Linux.cc
++++ b/lib/seccomp/CSystemCallFilter_Linux.cc
+@@ -84,6 +84,54 @@ const struct sock_filter FILTER[] = {
+ #define __NR_clone3 435
+ #endif
+     BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_faccessat, 45, 0),
++#elif defined(__s390x__)
++// The statx, rseq and clone3 syscalls won't be defined on a RHEL/CentOS 7 build
++// machine, but might exist on the kernel we run on
++#ifndef __NR_statx
++#define __NR_statx 379
++#endif
++#ifndef __NR_rseq
++#define __NR_rseq 383
++#endif
++#ifndef __NR_clone3
++#define __NR_clone3 435
++#endif
++#ifndef __NR_statfs64
++#define __NR_statfs64 265
++#endif
++#ifndef __NR_fstatfs64
++#define __NR_fstatfs64 266
++#endif
++#ifndef __NR_sigreturn
++#define __NR_sigreturn 119
++#endif
++#ifndef __NR_gettid
++#define __NR_gettid 236
++#endif
++#ifndef __NR_sigaltstack
++#define __NR_sigaltstack 186
++#endif
++#ifndef __NR_unlinkat
++#define __NR_unlinkat 294
++#endif
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_sigaltstack, 62, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_unlinkat, 61, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_sigreturn, 60, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_gettid, 59, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_access, 58, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_open, 57, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_dup2, 56, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_unlink, 55, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_stat, 54, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_lstat, 53, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_readlink, 52, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_getdents, 51, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_rmdir, 50, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_mkdir, 49, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_mknod, 48, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_statfs64, 47, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_fstatfs64, 46, 0),
++    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_faccessat, 45, 0),
+ #else
+ #error Unsupported hardware architecture
+ #endif
