@@ -12,12 +12,14 @@ set -e -o pipefail
 PACKAGE_NAME="elasticsearch"
 PACKAGE_VERSION="9.3.3"
 SOURCE_ROOT="$(pwd)"
-PATCH_URL="https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/${PACKAGE_VERSION}/patch"
+PATCH_URL="https://raw.githubusercontent.com/niyamsw/scriptx/refs/heads/main/patch"
+#PATCH_URL="https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/${PACKAGE_VERSION}/patch"
 ES_REPO_URL="https://github.com/elastic/elasticsearch"
 ML_CPP_REPO_URL="${ML_CPP_REPO_URL:-https://github.com/elastic/ml-cpp}"
 ML_CPP_REF="${ML_CPP_REF:-v${PACKAGE_VERSION}}"
 ML_CPP_REPO="${ML_CPP_REPO:-/tmp/mlcpp-ivy}"
-ML_CPP_PATCH_URL_BASE="${ML_CPP_PATCH_URL_BASE:-https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/${PACKAGE_VERSION}/patch}"
+#ML_CPP_PATCH_URL_BASE="${ML_CPP_PATCH_URL_BASE:-https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/${PACKAGE_VERSION}/patch}"
+ML_CPP_PATCH_URL_BASE="${ML_CPP_PATCH_URL_BASE:-https://raw.githubusercontent.com/niyamsw/scriptx/refs/heads/main/patch}"
 ML_CPP_PATCH_URL="${ML_CPP_PATCH_URL:-${ML_CPP_PATCH_URL_BASE}/ml-cpp.patch}"
 ML_CPP_PATCH_DIR="${ML_CPP_PATCH_DIR:-$SOURCE_ROOT/ml-cpp-patches}"
 PATCH_DIR="$ML_CPP_PATCH_DIR"
@@ -202,6 +204,26 @@ function configureMlCppRepo() {
     printf -- "Using ml-cpp Ivy repository: %s\n" "$ml_cpp_repo_url" |& tee -a "$LOG_FILE"
 }
 
+function installMlCppPythonBuildDependencies() {
+    local python_bin="${PYTHON_BIN:-python3}"
+    local pip_user_opts=(--user)
+
+    if ! command -v "$python_bin" >/dev/null 2>&1; then
+        printf -- 'Python binary %s was not found; ml-cpp build may fail.\n' "$python_bin" |& tee -a "$LOG_FILE"
+        return
+    fi
+
+    if ! "$python_bin" -m pip --version >/dev/null 2>&1; then
+        printf -- 'pip for %s was not found; ml-cpp build may install pip later.\n' "$python_bin" |& tee -a "$LOG_FILE"
+        return
+    fi
+
+    "$python_bin" -m pip install --help | grep -q -- '--break-system-packages' && pip_user_opts+=(--break-system-packages)
+    "$python_bin" -m pip install "${pip_user_opts[@]}" --upgrade pip setuptools wheel cython 'scikit-build<0.18' |& tee -a "$LOG_FILE"
+    "$python_bin" -m pip install "${pip_user_opts[@]}" pyyaml typing_extensions numpy ninja cmake cffi sympy networkx jinja2 fsspec filelock cython |& tee -a "$LOG_FILE"
+    export PATH="$HOME/.local/bin:$PATH"
+}
+
 function buildMlCpp() {
     if [[ -z "$(mlCppRepoPath)" ]]; then
         printf -- 'Using remote ml-cpp Ivy repository: %s\n' "$(mlCppRepoUrl)" |& tee -a "$LOG_FILE"
@@ -209,6 +231,7 @@ function buildMlCpp() {
         return
     fi
 
+    installMlCppPythonBuildDependencies
     ensureMlCppBuildScript
     export PACKAGE_VERSION SOURCE_ROOT PATCH_URL PATCH_DIR ML_CPP_PATCH_URL ML_CPP_PATCH_URL_BASE ML_CPP_PATCH_DIR LOG_FILE BUILD_ENV
     export ML_CPP_REPO_URL ML_CPP_REF ML_CPP_REPO ML_CPP_SOURCE_DIR
@@ -487,18 +510,23 @@ case "$DISTRO" in
     if [[ $DISTRO != "rhel-8.10" ]]; then
         ALLOWERASING="--allowerasing"
     fi
-    sudo yum install -y $ALLOWERASING curl git gzip tar wget patch make gcc gcc-c++ |& tee -a "$LOG_FILE"
+    sudo yum install -y $ALLOWERASING curl git gzip tar wget patch make gcc gcc-c++ bzip2 zip unzip zlib-devel libxml2-devel python3 python3-devel python3-pip cmake ninja-build |& tee -a "$LOG_FILE"
+    sudo yum install -y $ALLOWERASING gcc-toolset-13-gcc gcc-toolset-13-gcc-c++ |& tee -a "$LOG_FILE" || true
+    if [[ "$DISTRO" == "rhel-8.10" ]]; then
+        sudo yum install -y python39 python39-devel python39-pip |& tee -a "$LOG_FILE" || true
+        command -v python3.9 >/dev/null 2>&1 && export PYTHON_BIN="${PYTHON_BIN:-python3.9}"
+    fi
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
 
 "sles-15.7")
-    sudo zypper install -y curl git gzip tar wget patch make gcc gcc-c++ fontconfig dejavu-fonts gawk | tee -a "$LOG_FILE"
+    sudo zypper install -y curl git gzip tar wget patch make gcc gcc-c++ fontconfig dejavu-fonts gawk bzip2 zip unzip zlib-devel libxml2-devel python3 python3-devel python3-pip cmake ninja | tee -a "$LOG_FILE"
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
 
 "ubuntu-22.04" | "ubuntu-24.04")
     sudo apt-get update
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl git gzip tar wget patch locales make gcc g++ |& tee -a "$LOG_FILE"
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y curl git gzip tar wget patch locales make gcc g++ bzip2 zip unzip zlib1g-dev libxml2-dev python3 python3-dev python3-pip cmake ninja-build |& tee -a "$LOG_FILE"
     sudo locale-gen en_US.UTF-8
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
