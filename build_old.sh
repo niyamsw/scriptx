@@ -3,26 +3,17 @@
 # LICENSE: Apache License, Version 2.0 (http://www.apache.org/licenses/LICENSE-2.0)
 #
 # Instructions:
-# Download build script: wget https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/9.3.3/build_elasticsearch.sh
+# Download build script: wget https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/9.3.0/build_elasticsearch.sh
 # Execute build script: bash build_elasticsearch.sh    (provide -h for help)
 #
 USER_IN_GROUP_DOCKER=$(id -nGz $USER | tr '\0' '\n' | grep '^docker$' | wc -l)
 set -e -o pipefail
 
 PACKAGE_NAME="elasticsearch"
-PACKAGE_VERSION="9.3.3"
+PACKAGE_VERSION="9.3.0"
 SOURCE_ROOT="$(pwd)"
 PATCH_URL="https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/${PACKAGE_VERSION}/patch"
 ES_REPO_URL="https://github.com/elastic/elasticsearch"
-ML_CPP_REPO_URL="${ML_CPP_REPO_URL:-https://github.com/elastic/ml-cpp}"
-ML_CPP_REF="${ML_CPP_REF:-v${PACKAGE_VERSION}}"
-ML_CPP_REPO="${ML_CPP_REPO:-/tmp/mlcpp-ivy}"
-ML_CPP_PATCH_URL_BASE="${ML_CPP_PATCH_URL_BASE:-https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/${PACKAGE_VERSION}/patch}"
-ML_CPP_PATCH_URL="${ML_CPP_PATCH_URL:-${ML_CPP_PATCH_URL_BASE}/ml-cpp.patch}"
-ML_CPP_PATCH_DIR="${ML_CPP_PATCH_DIR:-$SOURCE_ROOT/ml-cpp-patches}"
-PATCH_DIR="$ML_CPP_PATCH_DIR"
-ML_CPP_GRADLE_OPTS=""
-ML_CPP_SOURCE_DIR="${ML_CPP_SOURCE_DIR:-$SOURCE_ROOT/ml-cpp}"
 LOG_FILE="$SOURCE_ROOT/logs/${PACKAGE_NAME}-${PACKAGE_VERSION}-$(date +"%F-%T").log"
 JAVA_PROVIDED="Temurin21"
 NON_ROOT_USER="$(whoami)"
@@ -110,8 +101,6 @@ function cleanup() {
     rm -rf "${SOURCE_ROOT}/v1.5.5.tar.gz"
     rm -rf "${SOURCE_ROOT}/jansi"
     rm -rf "${SOURCE_ROOT}/jansi-jar"
-    rm -rf "${SOURCE_ROOT}/ml-cpp.patch"
-    rm -rf "$ML_CPP_PATCH_DIR"
     printf -- '\nCleaned up the artifacts.\n' >>"$LOG_FILE"
 }
 
@@ -144,81 +133,6 @@ function installJava() {
     fi
 }
 
-function mlCppRepoPath() {
-    if [[ "$ML_CPP_REPO" == file://* ]]; then
-        printf -- '%s' "${ML_CPP_REPO#file://}"
-    elif [[ "$ML_CPP_REPO" == http://* || "$ML_CPP_REPO" == https://* ]]; then
-        printf -- ''
-    else
-        printf -- '%s' "$ML_CPP_REPO"
-    fi
-}
-
-function mlCppRepoUrl() {
-    if [[ "$ML_CPP_REPO" == file://* || "$ML_CPP_REPO" == http://* || "$ML_CPP_REPO" == https://* ]]; then
-        printf -- '%s' "$ML_CPP_REPO"
-    else
-        printf -- 'file://%s' "$ML_CPP_REPO"
-    fi
-}
-
-function applyMlCppPatch() {
-    local patch_file="$SOURCE_ROOT/ml-cpp.patch" build_script_rel="s390x/build_ml_cpp.sh" build_script="$ML_CPP_SOURCE_DIR/s390x/build_ml_cpp.sh"
-
-    cd "$ML_CPP_SOURCE_DIR"
-    mkdir -p "$ML_CPP_PATCH_DIR"
-    curl -sSL "$ML_CPP_PATCH_URL" -o "$patch_file"
-    curl -sSL "${ML_CPP_PATCH_URL_BASE}/boost-prime-fmod.patch" -o "$ML_CPP_PATCH_DIR/boost-prime-fmod.patch"
-    if git apply --check "$patch_file" >/dev/null 2>&1; then
-        git apply "$patch_file"
-    elif git apply --reverse --check "$patch_file" >/dev/null 2>&1; then
-        printf -- 'ml-cpp s390x patch is already applied.\n' |& tee -a "$LOG_FILE"
-    else
-        printf -- 'Unable to apply ml-cpp s390x patch.\n' |& tee -a "$LOG_FILE"
-        exit 1
-    fi
-    chmod +x "$build_script"
-}
-
-function ensureMlCppBuildScript() {
-    if [[ -d "$ML_CPP_SOURCE_DIR/.git" ]]; then
-        printf -- 'Using existing ml-cpp source at %s\n' "$ML_CPP_SOURCE_DIR" |& tee -a "$LOG_FILE"
-    else
-        printf -- 'Downloading ml-cpp. Please wait.\n' |& tee -a "$LOG_FILE"
-        rm -rf "$ML_CPP_SOURCE_DIR"
-        git clone --depth 1 -b "$ML_CPP_REF" "$ML_CPP_REPO_URL" "$ML_CPP_SOURCE_DIR"
-    fi
-    applyMlCppPatch
-}
-
-function configureMlCppRepo() {
-    local ml_cpp_repo_url
-
-    ml_cpp_repo_url="$(mlCppRepoUrl)"
-    ML_CPP_GRADLE_OPTS="-Dbuild.ml_cpp.repo=$ml_cpp_repo_url"
-    export ML_CPP_REPO ML_CPP_GRADLE_OPTS
-    grep -q "ML_CPP_REPO" "$BUILD_ENV" || printf -- "export ML_CPP_REPO=%q\n" "$ML_CPP_REPO" >> "$BUILD_ENV"
-    grep -q "ML_CPP_GRADLE_OPTS" "$BUILD_ENV" || printf -- "export ML_CPP_GRADLE_OPTS=%q\n" "$ML_CPP_GRADLE_OPTS" >> "$BUILD_ENV"
-    printf -- "Using ml-cpp Ivy repository: %s\n" "$ml_cpp_repo_url" |& tee -a "$LOG_FILE"
-}
-
-function buildMlCpp() {
-    if [[ -z "$(mlCppRepoPath)" ]]; then
-        printf -- 'Using remote ml-cpp Ivy repository: %s\n' "$(mlCppRepoUrl)" |& tee -a "$LOG_FILE"
-        configureMlCppRepo
-        return
-    fi
-
-    ensureMlCppBuildScript
-    export PACKAGE_VERSION SOURCE_ROOT PATCH_URL PATCH_DIR ML_CPP_PATCH_URL ML_CPP_PATCH_URL_BASE ML_CPP_PATCH_DIR LOG_FILE BUILD_ENV
-    export ML_CPP_REPO_URL ML_CPP_REF ML_CPP_REPO ML_CPP_SOURCE_DIR
-    [[ -n "${PYTHON_BIN:-}" ]] && export PYTHON_BIN
-    [[ -n "${CMAKE_C_COMPILER:-}" ]] && export CMAKE_C_COMPILER
-    [[ -n "${CMAKE_CXX_COMPILER:-}" ]] && export CMAKE_CXX_COMPILER
-    bash "$ML_CPP_SOURCE_DIR/s390x/build_ml_cpp.sh"
-    configureMlCppRepo
-}
-
 function createS390xGradleFile() {
     local dist_subdir="$1"
     local dist_dir="$SOURCE_ROOT/elasticsearch/distribution/${dist_subdir}"
@@ -241,10 +155,9 @@ function configureAndInstall() {
     printf -- "export JAVA_HOME=$JAVA_HOME\n" >> "$BUILD_ENV"
 
     export PATH=$ES_JAVA_HOME/bin:$PATH
-    printf -- "export PATH=$PATH\n" >> "$BUILD_ENV"
+    printf -- "export PATH=$PATH\n" >> "$BUILD_ENV" 
     java -version
     printf -- "Installation of %s is successful\n" "$JAVA_PROVIDED"
-    buildMlCpp
 
     # Build JANSI v2.4.0 for auto-generation of credentials for the elastic user
     cd "$SOURCE_ROOT"
@@ -289,7 +202,7 @@ function configureAndInstall() {
     # Compile libzstd.so library from source
     make -j$(nproc) lib
     make DESTDIR=$(pwd)/_build install
-
+    
     cd "$SOURCE_ROOT"
     # Download and configure ElasticSearch
     printf -- 'Downloading Elasticsearch. Please wait.\n'
@@ -303,7 +216,7 @@ function configureAndInstall() {
     cp -r "$SOURCE_ROOT/zstd-$ZSTD_VERSION/_build/usr/local/lib/" "$SOURCE_ROOT/elasticsearch/libs/zstd/"
     export LD_LIBRARY_PATH=$SOURCE_ROOT/elasticsearch/libs/zstd/${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}
     sudo ldconfig
-
+    
     # Add libzstd.so object file to native libraries via zstd-1.5.5-linux-s390x.jar file
     cd "$SOURCE_ROOT"
     mkdir -p "$SOURCE_ROOT/zstd-native-dep/artifacts/linux-s390x/"
@@ -311,7 +224,7 @@ function configureAndInstall() {
     jar --create --no-manifest --file "$SOURCE_ROOT/zstd-native-dep/zstd-1.5.5-linux-s390x.jar" -C "$SOURCE_ROOT/zstd-native-dep/artifacts/" .
     sed -i "s#%S390X_ZSTD_DEP_DIR%#$SOURCE_ROOT/zstd-native-dep#" "$SOURCE_ROOT/elasticsearch/libs/native/libraries/build.gradle"
 
-    # replace sha256sum of s390x jansi-2.4.0.jar
+    # replace sha256sum of s390x jansi-2.4.0.jar 
     sed -i 's|6cd91991323dd7b2fb28ca93d7ac12af5a86a2f53279e2b35827b30313fd0b9f|'"${sha256}"'|g' "${SOURCE_ROOT}/elasticsearch/gradle/verification-metadata.xml"
 
     createS390xGradleFile "packages/s390x-rpm"
@@ -344,7 +257,7 @@ function configureAndInstall() {
     printf -- "export GRADLE_USER_HOME=$GRADLE_USER_HOME\n" >> "$BUILD_ENV"
     printf -- "export ES9_OPTS=\"$ES9_OPTS\"\n" >> "$BUILD_ENV"
 
-    ./gradlew :distribution:archives:linux-s390x-tar:assemble $ES9_OPTS $ML_CPP_GRADLE_OPTS --max-workers="$CPU_NUM" --parallel | tee "$LOG_FILE"
+    ./gradlew :distribution:archives:linux-s390x-tar:assemble $ES9_OPTS --max-workers="$CPU_NUM" --parallel | tee "$LOG_FILE"
 
     # Verifying Elasticsearch installation
     if grep -q "BUILD FAILED" "$LOG_FILE"; then
@@ -360,11 +273,11 @@ function configureAndInstall() {
     fi
 
     printf -- 'Creating distributions as deb, rpm and docker: \n\n'
-    ./gradlew :distribution:packages:s390x-deb:assemble $ES9_OPTS $ML_CPP_GRADLE_OPTS
+    ./gradlew :distribution:packages:s390x-deb:assemble $ES9_OPTS
     printf -- 'Created deb distribution. \n\n'
-    ./gradlew :distribution:packages:s390x-rpm:assemble $ES9_OPTS $ML_CPP_GRADLE_OPTS
+    ./gradlew :distribution:packages:s390x-rpm:assemble $ES9_OPTS
     printf -- 'Created rpm distribution. \n\n'
-    ./gradlew distribution:docker:docker-s390x-export:exports390xDockerImage $ES9_OPTS $ML_CPP_GRADLE_OPTS
+    ./gradlew distribution:docker:docker-s390x-export:exports390xDockerImage $ES9_OPTS
     printf -- 'Created docker distribution. \n\n'
 
     printf -- "\n\nInstalling Elasticsearch\n"
@@ -379,6 +292,9 @@ function configureAndInstall() {
         sudo /usr/sbin/groupadd elastic
     fi
     sudo chown "$NON_ROOT_USER:elastic" -R /usr/share/elasticsearch
+
+    # Update config to disable xpack.ml
+    echo 'xpack.ml.enabled: false' >> /usr/share/elasticsearch/config/elasticsearch.yml
 
     # Verifying Elasticsearch installation
     if command -v "$PACKAGE_NAME" >/dev/null; then
@@ -400,13 +316,12 @@ function runTest() {
         # This works around a gradle problem where gradle does not recognize the distro provided OpenJDK.
         export RUNTIME_JAVA_HOME=/opt/java/jdk
         grep -q "RUNTIME_JAVA_HOME" "$BUILD_ENV" || printf -- "export RUNTIME_JAVA_HOME=$RUNTIME_JAVA_HOME\n" >> "$BUILD_ENV"
-        configureMlCppRepo
 
         cd "${SOURCE_ROOT}/elasticsearch"
         set +e
         # Run Elasticsearch test suite
         printf -- '\n Running Elasticsearch test suite.\n'
-        ./gradlew --continue test internalClusterTest -Dtests.haltonfailure=false -Dtests.jvm.argline="-Xss2m" $ES9_OPTS $ML_CPP_GRADLE_OPTS |& tee -a ${SOURCE_ROOT}/logs/test_results_${JAVA_PROVIDED}.log
+        ./gradlew --continue test internalClusterTest -Dtests.haltonfailure=false -Dtests.jvm.argline="-Xss2m" $ES9_OPTS |& tee -a ${SOURCE_ROOT}/logs/test_results_${JAVA_PROVIDED}.log
 
         printf -- '*****************************************************************************************************\n'
         printf -- 'Some X-Pack test cases may fail as not all X-Pack plugins are not supported on s390x, such as Machine Learning features.\n\n'

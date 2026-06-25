@@ -1,99 +1,3 @@
-diff --git a/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerInt7uBenchmarkTests.java b/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerInt7uBenchmarkTests.java
-index 9f43a681..ce5743fa 100644
---- a/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerInt7uBenchmarkTests.java
-+++ b/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerInt7uBenchmarkTests.java
-@@ -12,6 +12,7 @@ package org.elasticsearch.benchmark.vector.scorer;
- import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
- 
- import org.apache.lucene.util.Constants;
-+import org.elasticsearch.simdvec.VectorScorerFactory;
- import org.elasticsearch.simdvec.VectorSimilarityType;
- import org.elasticsearch.test.ESTestCase;
- import org.junit.BeforeClass;
-@@ -39,6 +40,11 @@ public class VectorScorerInt7uBenchmarkTests extends ESTestCase {
-         assumeFalse("doesn't work on windows yet", Constants.WINDOWS);
-     }
- 
-+    @BeforeClass
-+    public static void skipUnsupportedPlatforms() {
-+        assumeTrue("native vector scorer factory not present on this platform", VectorScorerFactory.instance().isPresent());
-+    }
-+
-     public void testScores() throws Exception {
-         for (int i = 0; i < 100; i++) {
-             VectorScorerInt7uBenchmark.VectorData data = new VectorScorerInt7uBenchmark.VectorData(dims);
-diff --git a/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerInt7uBulkBenchmarkTests.java b/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerInt7uBulkBenchmarkTests.java
-index 04ef36ec..65bf8b10 100644
---- a/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerInt7uBulkBenchmarkTests.java
-+++ b/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerInt7uBulkBenchmarkTests.java
-@@ -12,6 +12,7 @@ package org.elasticsearch.benchmark.vector.scorer;
- import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
- 
- import org.apache.lucene.util.Constants;
-+import org.elasticsearch.simdvec.VectorScorerFactory;
- import org.elasticsearch.simdvec.VectorSimilarityType;
- import org.elasticsearch.test.ESTestCase;
- import org.junit.BeforeClass;
-@@ -36,6 +37,11 @@ public class VectorScorerInt7uBulkBenchmarkTests extends ESTestCase {
-         assumeFalse("doesn't work on windows yet", Constants.WINDOWS);
-     }
- 
-+    @BeforeClass
-+    public static void skipUnsupportedPlatforms() {
-+        assumeTrue("native vector scorer factory not present on this platform", VectorScorerFactory.instance().isPresent());
-+    }
-+
-     public void testDotProductSequential() throws Exception {
-         for (int i = 0; i < 100; i++) {
-             VectorScorerInt7uBulkBenchmark.VectorData vectorData = new VectorScorerInt7uBulkBenchmark.VectorData(dims, 1000, 200);
-diff --git a/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerJDKFloat32BenchmarkTests.java b/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerJDKFloat32BenchmarkTests.java
-index 20c38023..221a3fd8 100644
---- a/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerJDKFloat32BenchmarkTests.java
-+++ b/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerJDKFloat32BenchmarkTests.java
-@@ -12,6 +12,7 @@ package org.elasticsearch.benchmark.vector.scorer;
- import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
- 
- import org.apache.lucene.util.Constants;
-+import org.elasticsearch.simdvec.VectorScorerFactory;
- import org.elasticsearch.test.ESTestCase;
- import org.junit.BeforeClass;
- import org.openjdk.jmh.annotations.Param;
-@@ -33,6 +34,11 @@ public class VectorScorerJDKFloat32BenchmarkTests extends ESTestCase {
-         assumeFalse("doesn't work on windows yet", Constants.WINDOWS);
-     }
- 
-+    @BeforeClass
-+    public static void skipUnsupportedPlatforms() {
-+        assumeTrue("native vector scorer factory not present on this platform", VectorScorerFactory.instance().isPresent());
-+    }
-+
-     static boolean supportsHeapSegments() {
-         return Runtime.version().feature() >= 22;
-     }
-diff --git a/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerJDKInt7uBenchmarkTests.java b/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerJDKInt7uBenchmarkTests.java
-index c365a754..60504649 100644
---- a/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerJDKInt7uBenchmarkTests.java
-+++ b/benchmarks/src/test/java/org/elasticsearch/benchmark/vector/scorer/VectorScorerJDKInt7uBenchmarkTests.java
-@@ -12,6 +12,7 @@ package org.elasticsearch.benchmark.vector.scorer;
- import com.carrotsearch.randomizedtesting.annotations.ParametersFactory;
- 
- import org.apache.lucene.util.Constants;
-+import org.elasticsearch.simdvec.VectorScorerFactory;
- import org.elasticsearch.test.ESTestCase;
- import org.junit.BeforeClass;
- import org.openjdk.jmh.annotations.Param;
-@@ -32,6 +33,11 @@ public class VectorScorerJDKInt7uBenchmarkTests extends ESTestCase {
-         assumeFalse("doesn't work on windows yet", Constants.WINDOWS);
-     }
- 
-+    @BeforeClass
-+    public static void skipUnsupportedPlatforms() {
-+        assumeTrue("native vector scorer factory not present on this platform", VectorScorerFactory.instance().isPresent());
-+    }
-+
-     static boolean supportsHeapSegments() {
-         return Runtime.version().feature() >= 22;
-     }
 diff --git a/build-tools-internal/src/main/java/org/elasticsearch/gradle/internal/Jdk.java b/build-tools-internal/src/main/java/org/elasticsearch/gradle/internal/Jdk.java
 index dfbfe0f1..36a6b0ff 100644
 --- a/build-tools-internal/src/main/java/org/elasticsearch/gradle/internal/Jdk.java
@@ -345,18 +249,10 @@ index 0e22e563..551e0ec4 100644
          *) echo >&2 "Unsupported architecture \$arch"; exit 1 ;; \\
      esac ; \\
      curl -f --retry 10 -S -L -o /tmp/tini https://github.com/krallin/tini/releases/download/v0.19.0/\${tini_bin}; \\
-@@ -55,7 +56,7 @@ RUN tar -zxf /tmp/elasticsearch.tar.gz --strip-components=1 && \\
- # Reset permissions on all files
-     find . -type f -exec chmod 0444 {} + && \\
- # Make CLI tools executable
--    chmod 0555 bin/* jdk/bin/* jdk/lib/jspawnhelper modules/x-pack-ml/platform/linux-*/bin/* && \\
-+    chmod 0555 bin/* jdk/bin/* jdk/lib/jspawnhelper && \\
- # Make some directories writable. `bin` must be writable because
- # plugins can install their own CLI utilities.
-     chmod 0775 bin config config/jvm.options.d data logs plugins && \\
 @@ -71,6 +72,26 @@ RUN tar -zxf /tmp/elasticsearch.tar.gz --strip-components=1 && \\
  # The distribution includes a `config` directory, no need to create it
- COPY --chmod=664 config/elasticsearch.yml config/log4j2.properties config/
+-COPY --chmod=664 config/elasticsearch.yml config/log4j2.properties config/
++COPY config/elasticsearch.yml config/log4j2.properties config/
  
 +# Rebuild jansi native lib so that it uses the image's glibc
 +RUN mkdir jansi_tmp && cd jansi_tmp && \\
@@ -808,7 +704,7 @@ diff --git a/server/src/test/java/org/elasticsearch/common/bytes/BytesArrayTests
 index e067be6b..98f08dbd 100644
 --- a/server/src/test/java/org/elasticsearch/common/bytes/BytesArrayTests.java
 +++ b/server/src/test/java/org/elasticsearch/common/bytes/BytesArrayTests.java
-@@ -108,4 +108,47 @@ public class BytesArrayTests extends AbstractBytesReferenceTestCase {
+@@ -108,4 +108,46 @@ public class BytesArrayTests extends AbstractBytesReferenceTestCase {
          assertThat(e.getMessage(), equalTo("Index 9 out of bounds for length 9"));
      }
  
@@ -854,7 +750,6 @@ index e067be6b..98f08dbd 100644
 +        Exception e = expectThrows(ArrayIndexOutOfBoundsException.class, () -> ref.getDoubleLE(9));
 +        assertThat(e.getMessage(), equalTo("Index 9 out of bounds for length 9"));
 +    }
-+
  }
 diff --git a/server/src/test/java/org/elasticsearch/common/bytes/CompositeBytesReferenceTests.java b/server/src/test/java/org/elasticsearch/common/bytes/CompositeBytesReferenceTests.java
 index e6effbfe..2851c69f 100644
@@ -931,21 +826,6 @@ index e6effbfe..2851c69f 100644
 +        expectThrows(IndexOutOfBoundsException.class, () -> comp.getLong(17));
 +    }
  }
-diff --git a/server/src/test/java/org/elasticsearch/common/network/InetAddressesTests.java b/server/src/test/java/org/elasticsearch/common/network/InetAddressesTests.java
-index a473d032..fa6c1dbb 100644
---- a/server/src/test/java/org/elasticsearch/common/network/InetAddressesTests.java
-+++ b/server/src/test/java/org/elasticsearch/common/network/InetAddressesTests.java
-@@ -152,7 +152,9 @@ public class InetAddressesTests extends ESTestCase {
-         }
-         assertNotNull(scopeId);
-         String ipStr = "0:0:0:0:0:0:0:1%" + scopeId;
--        InetAddress ipv6Addr = InetAddress.getByName(ipStr);
-+        byte[] ipv6Loopback = new byte[16];
-+        ipv6Loopback[15] = 1;
-+        InetAddress ipv6Addr = InetAddress.getByAddress(ipv6Loopback);
-         assertEquals(ipv6Addr, InetAddresses.forString(ipStr));
-         assertTrue(InetAddresses.isInetAddress(ipStr));
-     }
 diff --git a/settings.gradle b/settings.gradle
 index e0a6a896..cf7a1ee9 100644
 --- a/settings.gradle
@@ -1059,88 +939,3 @@ index 2a305cfd..da6b8bbc 100644
                  }
              }
  
-diff --git a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElasticsearchInternalService.java b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElasticsearchInternalService.java
-index 34c7a679..e517e7e2 100644
---- a/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElasticsearchInternalService.java
-+++ b/x-pack/plugin/inference/src/main/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElasticsearchInternalService.java
-@@ -14,7 +14,6 @@ import org.elasticsearch.TransportVersion;
- import org.elasticsearch.action.ActionListener;
- import org.elasticsearch.common.logging.DeprecationCategory;
- import org.elasticsearch.common.logging.DeprecationLogger;
--import org.elasticsearch.common.settings.Settings;
- import org.elasticsearch.common.util.LazyInitializable;
- import org.elasticsearch.core.Nullable;
- import org.elasticsearch.core.Strings;
-@@ -125,20 +124,34 @@ public class ElasticsearchInternalService extends BaseElasticsearchInternalServi
-      */
-     private static final String OLD_MODEL_ID_FIELD_NAME = "model_version";
- 
--    private final Settings settings;
-+    private final boolean mlEnabled;
- 
-     public ElasticsearchInternalService(InferenceServiceExtension.InferenceServiceFactoryContext context) {
-+        this(context, XPackSettings.MACHINE_LEARNING_ENABLED.get(context.settings()));
-+    }
-+
-+    // for testing
-+    ElasticsearchInternalService(InferenceServiceExtension.InferenceServiceFactoryContext context, boolean mlEnabled) {
-         super(context);
--        this.settings = context.settings();
-+        this.mlEnabled = mlEnabled;
-     }
- 
-     // for testing
-     ElasticsearchInternalService(
-         InferenceServiceExtension.InferenceServiceFactoryContext context,
-         Consumer<ActionListener<PreferredModelVariant>> platformArch
-+    ) {
-+        this(context, platformArch, XPackSettings.MACHINE_LEARNING_ENABLED.get(context.settings()));
-+    }
-+
-+    // for testing
-+    ElasticsearchInternalService(
-+        InferenceServiceExtension.InferenceServiceFactoryContext context,
-+        Consumer<ActionListener<PreferredModelVariant>> platformArch,
-+        boolean mlEnabled
-     ) {
-         super(context, platformArch);
--        this.settings = context.settings();
-+        this.mlEnabled = mlEnabled;
-     }
- 
-     @Override
-@@ -881,7 +894,7 @@ public class ElasticsearchInternalService extends BaseElasticsearchInternalServi
-         }
- 
-         // if ML is disabled, do not update Deployment Stats (there won't be changes)
--        if (XPackSettings.MACHINE_LEARNING_ENABLED.get(settings) == false) {
-+        if (mlEnabled == false) {
-             listener.onResponse(models);
-             return;
-         }
-diff --git a/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElasticsearchInternalServiceTests.java b/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElasticsearchInternalServiceTests.java
-index 0ee42b97..f45affe1 100644
---- a/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElasticsearchInternalServiceTests.java
-+++ b/x-pack/plugin/inference/src/test/java/org/elasticsearch/xpack/inference/services/elasticsearch/ElasticsearchInternalServiceTests.java
-@@ -2014,10 +2014,10 @@ public class ElasticsearchInternalServiceTests extends InferenceServiceTestCase
-             client,
-             threadPool,
-             cs,
--            Settings.builder().put("xpack.ml.enabled", true).build(),
-+            Settings.EMPTY,
-             inferenceStats
-         );
--        try (var service = new ElasticsearchInternalService(context)) {
-+        try (var service = new ElasticsearchInternalService(context, true)) {
-             List<Model> models = List.of(model);
-             var latch = new CountDownLatch(1);
-             service.updateModelsWithDynamicFields(models, ActionTestUtils.assertNoFailureListener(r -> latch.countDown()));
-@@ -2243,7 +2243,7 @@ public class ElasticsearchInternalServiceTests extends InferenceServiceTestCase
-         var cSettings = new ClusterSettings(Settings.EMPTY, Set.of(MachineLearningField.MAX_LAZY_ML_NODES));
-         when(cs.getClusterSettings()).thenReturn(cSettings);
-         var context = new InferenceServiceExtension.InferenceServiceFactoryContext(client, threadPool, cs, Settings.EMPTY, inferenceStats);
--        return new ElasticsearchInternalService(context);
-+        return new ElasticsearchInternalService(context, true);
-     }
- 
-     @Override

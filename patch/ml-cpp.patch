@@ -179,7 +179,7 @@ diff --git a/cmake/compiler/gcc.cmake b/cmake/compiler/gcc.cmake
 index 3aff5fa9e..38c3b2fe2 100644
 --- a/cmake/compiler/gcc.cmake
 +++ b/cmake/compiler/gcc.cmake
-@@ -10,20 +10,41 @@
+@@ -10,20 +10,46 @@
  #
  
  # which compilers to use for C and C++
@@ -188,6 +188,11 @@ index 3aff5fa9e..38c3b2fe2 100644
 +if(EXISTS "/usr/local/gcc133/bin/gcc" AND EXISTS "/usr/local/gcc133/bin/g++")
 +  set(CMAKE_C_COMPILER   "/usr/local/gcc133/bin/gcc")
 +  set(CMAKE_CXX_COMPILER "/usr/local/gcc133/bin/g++")
++elseif(DEFINED ENV{ML_GCC_COMPILER} AND DEFINED ENV{ML_GXX_COMPILER})
++  set(ML_GCC_COMPILER "$ENV{ML_GCC_COMPILER}" CACHE FILEPATH "Selected GCC compiler" FORCE)
++  set(ML_GXX_COMPILER "$ENV{ML_GXX_COMPILER}" CACHE FILEPATH "Selected GXX compiler" FORCE)
++  set(CMAKE_C_COMPILER   "${ML_GCC_COMPILER}")
++  set(CMAKE_CXX_COMPILER "${ML_GXX_COMPILER}")
 +else()
 +  find_program(ML_GCC_COMPILER gcc REQUIRED)
 +  find_program(ML_GXX_COMPILER g++ REQUIRED)
@@ -228,7 +233,7 @@ index 3aff5fa9e..38c3b2fe2 100644
  
  SET(CMAKE_CXX_ARCHIVE_CREATE "<CMAKE_AR> -ru <TARGET> <OBJECTS>")
  
-@@ -51,4 +72,3 @@ list(APPEND ML_CXX_FLAGS
+@@ -51,4 +72,3 @@
    "-fvisibility-inlines-hidden"
    )
  
@@ -269,10 +274,13 @@ diff --git a/cmake/variables.cmake b/cmake/variables.cmake
 index 3f42b3cd9..08a06a39b 100644
 --- a/cmake/variables.cmake
 +++ b/cmake/variables.cmake
-@@ -66,6 +66,9 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+@@ -66,6 +66,12 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
    endif()
  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
    set(ML_BOOST_COMPILER_VER "gcc${CMAKE_CXX_COMPILER_VERSION_MAJOR}")
++  if(DEFINED ENV{ML_BOOST_COMPILER_VER})
++    set(ML_BOOST_COMPILER_VER "$ENV{ML_BOOST_COMPILER_VER}")
++  endif()
 +  if(NOT Boost_ROOT AND NOT DEFINED ENV{BOOST_ROOT})
 +    set(Boost_ROOT /usr/local/gcc133)
 +  endif()
@@ -660,3 +668,740 @@ index 9d5397100..479d5e23e 100644
  #else
  #error Unsupported hardware architecture
  #endif
+
+diff --git a/lib/core/CMakeLists.txt b/lib/core/CMakeLists.txt
+--- a/lib/core/CMakeLists.txt
++++ b/lib/core/CMakeLists.txt
+@@ -14,7 +14,8 @@ project("ML Core")
+ set(ML_LINK_LIBRARIES
+   ${ZLIB_LIBRARIES}
+   ${LIBXML2_LIBRARIES}
+-  ${Boost_LIBRARIES})
++  ${Boost_LIBRARIES}
++  ${CMAKE_DL_LIBS})
+ 
+ ml_add_library(MlCore SHARED
+   CBase64Filter.cc
+diff --git a/bin/controller/CMakeLists.txt b/bin/controller/CMakeLists.txt
+--- a/bin/controller/CMakeLists.txt
++++ b/bin/controller/CMakeLists.txt
+@@ -14,6 +14,7 @@ set(ML_LINK_LIBRARIES 
+   MlCore
+   MlSeccomp
+   MlVer
++  ${CMAKE_DL_LIBS}
+   )
+ 
+ ml_add_executable(controller
+diff --git a/s390x/build_ml_cpp.sh b/s390x/build_ml_cpp.sh
+new file mode 100755
+--- /dev/null
++++ b/s390x/build_ml_cpp.sh
+@@ -0,0 +1,707 @@
++#!/usr/bin/env bash
++# ml-cpp build helpers sourced by build_elasticsearch.sh.
++
++ML_CPP_REPO_URL="${ML_CPP_REPO_URL:-https://github.com/elastic/ml-cpp}"
++ML_CPP_REF="${ML_CPP_REF:-v${PACKAGE_VERSION}}"
++ML_CPP_REPO="${ML_CPP_REPO:-/tmp/mlcpp-ivy}"
++ML_CPP_GRADLE_OPTS=""
++ML_CPP_GRADLE_TASKS="${ML_CPP_GRADLE_TASKS:-buildZip buildDependenciesZip buildNoDependenciesZip}"
++ML_CPP_FORCE_REBUILD="${ML_CPP_FORCE_REBUILD:-false}"
++ML_CPP_SOURCE_DIR="${ML_CPP_SOURCE_DIR:-$SOURCE_ROOT/ml-cpp}"
++ML_CPP_JAVA_HOME="${ML_CPP_JAVA_HOME:-/opt/java/jdk17}"
++ML_CPP_BOOST_ROOT="${ML_CPP_BOOST_ROOT:-/usr/local/gcc133}"
++ML_CPP_BOOST_SOURCE_DIR="${ML_CPP_BOOST_SOURCE_DIR:-$SOURCE_ROOT/boost_1_86_0}"
++ML_PYTORCH_ROOT="${ML_PYTORCH_ROOT:-}"
++ML_PYTORCH_HOME="${ML_PYTORCH_HOME:-}"
++ML_PYTORCH_LIB_DIR="${ML_PYTORCH_LIB_DIR:-}"
++ML_PYTORCH_REPO_URL="${ML_PYTORCH_REPO_URL:-https://github.com/pytorch/pytorch}"
++ML_PYTORCH_REF="${ML_PYTORCH_REF:-v2.7.1}"
++ML_PYTORCH_SOURCE_DIR="${ML_PYTORCH_SOURCE_DIR:-$SOURCE_ROOT/pytorch}"
++ML_PYTORCH_BUILD_FROM_SOURCE="${ML_PYTORCH_BUILD_FROM_SOURCE:-true}"
++ML_PYTORCH_BUILD_PARALLEL_LEVEL="${ML_PYTORCH_BUILD_PARALLEL_LEVEL:-${ML_CPP_BUILD_PARALLEL_LEVEL:-4}}"
++PYTHON_BIN="${PYTHON_BIN:-python3}"
++EXPAT_RUNTIME_VERSION="${EXPAT_RUNTIME_VERSION:-2.8.1}"
++EXPAT_RUNTIME_URL="${EXPAT_RUNTIME_URL:-https://github.com/libexpat/libexpat/releases/download/R_2_8_1/expat-2.8.1.tar.bz2}"
++EXPAT_RUNTIME_PREFIX="${EXPAT_RUNTIME_PREFIX:-$SOURCE_ROOT/expat-${EXPAT_RUNTIME_VERSION}-runtime}"
++PYTHON_RUNTIME_LIBRARY_PATH="${PYTHON_RUNTIME_LIBRARY_PATH:-}"
++
++function mlCppRepoPath() {
++    if [[ "$ML_CPP_REPO" == file://* ]]; then
++        printf -- '%s' "${ML_CPP_REPO#file://}"
++    elif [[ "$ML_CPP_REPO" == http://* || "$ML_CPP_REPO" == https://* ]]; then
++        printf -- ''
++    else
++        printf -- '%s' "$ML_CPP_REPO"
++    fi
++}
++
++function mlCppRepoUrl() {
++    if [[ "$ML_CPP_REPO" == file://* || "$ML_CPP_REPO" == http://* || "$ML_CPP_REPO" == https://* ]]; then
++        printf -- '%s' "$ML_CPP_REPO"
++    else
++        printf -- 'file://%s' "$ML_CPP_REPO"
++    fi
++}
++
++function mlCppArtifactDir() {
++    local ml_cpp_repo_path="$1"
++    printf -- '%s/maven/org/elasticsearch/ml/ml-cpp/%s-SNAPSHOT' "$ml_cpp_repo_path" "$PACKAGE_VERSION"
++}
++
++function ensureMlCppDepsZip() {
++    local deps_zip="$1"
++
++    if [[ -f "$deps_zip" ]]; then
++        return 0
++    fi
++
++    printf -- 'ml-cpp deps zip was not found; creating an empty deps artifact at %s.\n' "$deps_zip" |& tee -a "$LOG_FILE"
++    mkdir -p "$(dirname "$deps_zip")"
++    python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1], "w").close()' "$deps_zip"
++}
++
++function runBuildPython() {
++    if [[ -n "$PYTHON_RUNTIME_LIBRARY_PATH" ]]; then
++        env LD_LIBRARY_PATH="$PYTHON_RUNTIME_LIBRARY_PATH" "$PYTHON_BIN" "$@"
++    else
++        env -u LD_LIBRARY_PATH "$PYTHON_BIN" "$@"
++    fi
++}
++
++function expatRuntimeHasPythonSymbol() {
++    local expat_lib="$1"
++
++    [[ -e "$expat_lib" ]] || return 1
++    if command -v nm >/dev/null 2>&1 && nm -D "$expat_lib" 2>/dev/null | awk '{print $NF}' | grep -qx 'XML_SetAllocTrackerActivationThreshold'; then
++        return 0
++    fi
++    if command -v readelf >/dev/null 2>&1 && readelf -Ws "$expat_lib" 2>/dev/null | awk '{print $NF}' | grep -qx 'XML_SetAllocTrackerActivationThreshold'; then
++        return 0
++    fi
++    strings "$expat_lib" 2>/dev/null | grep -q 'XML_SetAllocTrackerActivationThreshold'
++}
++
++function useExistingPythonExpatRuntime() {
++    [[ -e "$EXPAT_RUNTIME_PREFIX/lib/libexpat.so.1" ]] || return 1
++    PYTHON_RUNTIME_LIBRARY_PATH="$EXPAT_RUNTIME_PREFIX/lib"
++    export PYTHON_RUNTIME_LIBRARY_PATH
++}
++
++function configurePythonExpatRuntime() {
++    local expat_source_dir="$SOURCE_ROOT/expat-${EXPAT_RUNTIME_VERSION}"
++    local expat_archive="$SOURCE_ROOT/expat-${EXPAT_RUNTIME_VERSION}.tar.bz2"
++
++    if useExistingPythonExpatRuntime && runBuildPython -c 'import xml.parsers.expat' >/dev/null 2>&1; then
++        return
++    fi
++    PYTHON_RUNTIME_LIBRARY_PATH=""
++
++    printf -- 'Building Expat %s runtime for %s because its system pyexpat runtime is incompatible.\n' "$EXPAT_RUNTIME_VERSION" "$PYTHON_BIN" |& tee -a "$LOG_FILE"
++    rm -rf "$expat_source_dir" "$EXPAT_RUNTIME_PREFIX"
++    curl -SL -o "$expat_archive" "$EXPAT_RUNTIME_URL"
++    tar -xjf "$expat_archive" -C "$SOURCE_ROOT"
++
++    cd "$expat_source_dir"
++    ./configure --prefix="$EXPAT_RUNTIME_PREFIX" --without-docbook --without-examples |& tee -a "$LOG_FILE"
++    make -j "${ML_CPP_BUILD_PARALLEL_LEVEL:-4}" |& tee -a "$LOG_FILE"
++    make install |& tee -a "$LOG_FILE"
++
++    PYTHON_RUNTIME_LIBRARY_PATH="$EXPAT_RUNTIME_PREFIX/lib"
++    export PYTHON_RUNTIME_LIBRARY_PATH
++    if ! expatRuntimeHasPythonSymbol "$EXPAT_RUNTIME_PREFIX/lib/libexpat.so.1"; then
++        printf -- 'Built Expat runtime did not expose XML_SetAllocTrackerActivationThreshold via symbol inspection; validating with Python import instead.\n' |& tee -a "$LOG_FILE"
++    fi
++}
++
++function ensureBuildPythonUsable() {
++    local python_check_output
++
++    if python_check_output="$(runBuildPython -c 'import sys; print(sys.version); import xml.parsers.expat; print("pyexpat ok")' 2>&1)"; then
++        printf -- 'Using build Python %s: %s\n' "$PYTHON_BIN" "$(printf -- '%s\n' "$python_check_output" | head -1)" |& tee -a "$LOG_FILE"
++        return
++    fi
++
++    printf -- 'Build Python %s failed pyexpat import:\n%s\n' "$PYTHON_BIN" "$python_check_output" |& tee -a "$LOG_FILE"
++    if useExistingPythonExpatRuntime && python_check_output="$(runBuildPython -c 'import sys; print(sys.version); import xml.parsers.expat; print("pyexpat ok")' 2>&1)"; then
++        printf -- 'Using build Python %s with existing Expat runtime %s: %s\n' "$PYTHON_BIN" "$EXPAT_RUNTIME_PREFIX" "$(printf -- '%s\n' "$python_check_output" | head -1)" |& tee -a "$LOG_FILE"
++        return
++    fi
++    PYTHON_RUNTIME_LIBRARY_PATH=""
++    configurePythonExpatRuntime
++
++    if ! python_check_output="$(runBuildPython -c 'import sys; print(sys.version); import xml.parsers.expat; print("pyexpat ok")' 2>&1)"; then
++        printf -- 'Build Python %s is still unusable after configuring Expat runtime:\n%s\n' "$PYTHON_BIN" "$python_check_output" |& tee -a "$LOG_FILE"
++        exit 1
++    fi
++
++    printf -- 'Using build Python %s with Expat runtime %s: %s\n' "$PYTHON_BIN" "$EXPAT_RUNTIME_PREFIX" "$(printf -- '%s\n' "$python_check_output" | head -1)" |& tee -a "$LOG_FILE"
++}
++
++function findSystemLibrary() {
++    local library="$1" candidate candidates=("/usr/lib64/$library" "/usr/lib/$library" "/usr/lib/$(uname -m)-linux-gnu/$library")
++    if command -v gcc >/dev/null 2>&1; then
++        candidate="$(gcc -print-file-name="$library" 2>/dev/null || true)"
++        [[ -n "$candidate" && "$candidate" != "$library" ]] && candidates+=("$candidate")
++    fi
++    if command -v ldconfig >/dev/null 2>&1; then
++        candidate="$(ldconfig -p 2>/dev/null | awk -v library="$library" '$1 == library { print $NF; exit }')"
++        [[ -n "$candidate" ]] && candidates+=("$candidate")
++    fi
++    for candidate in "${candidates[@]}"; do [[ -e "$candidate" ]] && readlink -f "$candidate" && return 0; done
++    return 1
++}
++
++function findMlCppBoostLibDir() {
++    local candidate_dir
++
++    for candidate_dir in "$ML_CPP_BOOST_ROOT/lib" "$ML_CPP_BOOST_SOURCE_DIR/stage/lib"; do
++        if [[ -d "$candidate_dir" ]] && find "$candidate_dir" -maxdepth 1 -type f -name 'libboost_program_options*.so.*' -print -quit | grep -q .; then
++            printf -- '%s' "$candidate_dir"
++            return 0
++        fi
++    done
++
++    return 1
++}
++
++function mlCppBoostCompilerTag() {
++    local boost_lib boost_name
++
++    boost_lib="$(find "$ML_CPP_BOOST_ROOT/lib" -maxdepth 1 -type f -name 'libboost_iostreams-gcc*-1_86.*' 2>/dev/null | head -1 || true)"
++    [[ -n "$boost_lib" ]] || return 1
++    boost_name="$(basename "$boost_lib")"
++    if [[ "$boost_name" =~ -(gcc[0-9]+)- ]]; then
++        printf -- '%s' "${BASH_REMATCH[1]}"
++        return 0
++    fi
++    return 1
++}
++
++function patchMlCppS390xBoostDepsZip() {
++    local deps_zip="$1" deps_zip_abs boost_lib_dir staging_dir
++
++    ensureMlCppDepsZip "$deps_zip"
++    deps_zip_abs="$(cd "$(dirname "$deps_zip")" && pwd -P)/$(basename "$deps_zip")"
++
++    if ! boost_lib_dir="$(findMlCppBoostLibDir)"; then
++        printf -- 'Unable to find Boost runtime libraries for s390x ml-cpp packaging.\n' |& tee -a "$LOG_FILE"
++        printf -- 'Checked %s/lib and %s/stage/lib.\n' "$ML_CPP_BOOST_ROOT" "$ML_CPP_BOOST_SOURCE_DIR" |& tee -a "$LOG_FILE"
++        exit 1
++    fi
++
++    staging_dir="$(mktemp -d)"
++    mkdir -p "$staging_dir/platform/linux-s390x/lib"
++
++    printf -- 'Adding s390x Boost runtime libraries from %s to %s.\n' "$boost_lib_dir" "$deps_zip" |& tee -a "$LOG_FILE"
++    find "$boost_lib_dir" -maxdepth 1 -type f -name 'libboost*.so.*' ! -name '*unit_test_framework*' ! -name '*prg_exec_monitor*' -exec cp -av {} "$staging_dir/platform/linux-s390x/lib" \; |& tee -a "$LOG_FILE"
++
++    if ! find "$staging_dir/platform/linux-s390x/lib" -maxdepth 1 -type f -name 'libboost*.so.*' -print -quit | grep -q .; then
++        printf -- 'No Boost runtime libraries were staged for s390x ml-cpp packaging.\n' |& tee -a "$LOG_FILE"
++        rm -rf "$staging_dir"
++        exit 1
++    fi
++
++    (
++        cd "$staging_dir"; set +e
++        find platform/linux-s390x/lib -maxdepth 1 -type f -name 'libboost*.so.*' -print -exec touch -t 2401010000 {} \; | sort | zip -X -u "$deps_zip_abs" -@
++        zip_status=$?; set -e
++        [[ "$zip_status" -eq 12 ]] && printf -- 's390x Boost runtime libraries are already present in %s.\n' "$deps_zip_abs"
++        [[ "$zip_status" -eq 0 || "$zip_status" -eq 12 ]] || exit "$zip_status"
++    ) |& tee -a "$LOG_FILE"
++
++    rm -rf "$staging_dir"
++}
++
++function hasMlCppIvyArtifacts() {
++    local ml_cpp_repo_path="$1"
++    local ml_cpp_artifact_dir
++    local ml_cpp_deps_zip
++    local ml_cpp_nodeps_zip
++
++    [[ -n "$ml_cpp_repo_path" ]] || return 1
++    ml_cpp_artifact_dir="$(mlCppArtifactDir "$ml_cpp_repo_path")"
++    ml_cpp_deps_zip="$ml_cpp_artifact_dir/ml-cpp-${PACKAGE_VERSION}-SNAPSHOT-deps.zip"
++    ml_cpp_nodeps_zip="$ml_cpp_artifact_dir/ml-cpp-${PACKAGE_VERSION}-SNAPSHOT-nodeps.zip"
++
++    if [[ -f "$ml_cpp_nodeps_zip" ]]; then
++        ensureMlCppDepsZip "$ml_cpp_deps_zip"
++        if [[ -f "$ml_cpp_deps_zip" ]]; then
++            return 0
++        fi
++    fi
++
++    return 1
++}
++
++function getMlCppJavaUrl() {
++    local jruntime=$1
++    local jdist=$2
++    case "${jruntime}" in
++    "Temurin17")
++        echo "https://api.adoptium.net/v3/binary/latest/17/ga/linux/s390x/${jdist}/hotspot/normal/eclipse"
++        ;;
++    esac
++}
++
++function installMlCppJava() {
++    if [[ -x "$ML_CPP_JAVA_HOME/bin/java" ]]; then
++        return
++    fi
++
++    printf -- "Download and install Java 17 for ml-cpp build \n"
++    cd "$SOURCE_ROOT"
++    sudo mkdir -p "$ML_CPP_JAVA_HOME"
++    curl -SL -o jdk17.tar.gz "$(getMlCppJavaUrl Temurin17 jdk)"
++    sudo tar -zxf jdk17.tar.gz -C "$ML_CPP_JAVA_HOME" --strip-components 1
++}
++
++function installMlCppBoost() {
++    local boost_args
++
++    if find "$ML_CPP_BOOST_ROOT" -path '*/BoostConfig.cmake' -print -quit 2>/dev/null | grep -q .; then
++        printf -- 'Using existing Boost 1.86 installation at %s\n' "$ML_CPP_BOOST_ROOT" |& tee -a "$LOG_FILE"
++        return
++    fi
++
++    printf -- 'Building Boost 1.86 for ml-cpp.\n' |& tee -a "$LOG_FILE"
++    cd "$SOURCE_ROOT"
++    if [[ ! -d "$ML_CPP_BOOST_SOURCE_DIR" ]]; then
++        curl -SL -o boost_1_86_0.tar.bz2 https://archives.boost.io/release/1.86.0/source/boost_1_86_0.tar.bz2
++        tar -xjf boost_1_86_0.tar.bz2
++    fi
++
++    cd "$ML_CPP_BOOST_SOURCE_DIR"
++    ./bootstrap.sh --without-libraries=context,coroutine,graph_parallel,mpi,python --without-icu |& tee -a "$LOG_FILE"
++    if ! grep -q '{3ul, 13ul' boost/unordered/detail/prime_fmod.hpp; then
++        patch -p0 < "$PATCH_DIR/boost-prime-fmod.patch" |& tee -a "$LOG_FILE"
++    fi
++    boost_args=(--with-iostreams --with-filesystem --with-program_options --with-regex --with-date_time --with-log --with-thread --with-test --layout=versioned --disable-icu pch=off optimization=speed inlining=full define=BOOST_MATH_NO_LONG_DOUBLE_MATH_FUNCTIONS define=BOOST_LOG_WITHOUT_DEBUG_OUTPUT define=BOOST_LOG_WITHOUT_EVENT_LOG define=BOOST_LOG_WITHOUT_SYSLOG define=BOOST_LOG_WITHOUT_IPC define=_FORTIFY_SOURCE=2 "cxxflags=-std=gnu++17 -fstack-protector" "cflags=-D__STDC_FORMAT_MACROS" "linkflags=-std=gnu++17 -Wl,-z,relro -Wl,-z,now")
++    ./b2 -j"${ML_CPP_BUILD_PARALLEL_LEVEL:-4}" "${boost_args[@]}" |& tee -a "$LOG_FILE"
++    sudo ./b2 install --prefix="$ML_CPP_BOOST_ROOT" "${boost_args[@]}" |& tee -a "$LOG_FILE"
++}
++
++function installMlCppSystemPrefixLinks() {
++    local libxml2_path
++
++    sudo mkdir -p "$ML_CPP_BOOST_ROOT/include" "$ML_CPP_BOOST_ROOT/lib"
++
++    if [[ -d /usr/include/libxml2 && ! -e "$ML_CPP_BOOST_ROOT/include/libxml2" ]]; then
++        sudo ln -s /usr/include/libxml2 "$ML_CPP_BOOST_ROOT/include/libxml2"
++    fi
++
++    if libxml2_path="$(findSystemLibrary libxml2.so)"; then
++        sudo ln -sfn "$libxml2_path" "$ML_CPP_BOOST_ROOT/lib/libxml2.so"
++    else
++        printf -- 'Warning: unable to locate system libxml2.so for ml-cpp prefix links.\n' |& tee -a "$LOG_FILE"
++    fi
++}
++
++function cleanStaleMlCppBuildDir() {
++    local build_dir="$ML_CPP_SOURCE_DIR/cmake-build-relwithdebinfo" missing_prefix_lib="$ML_CPP_BOOST_ROOT/lib/libxml2.so"
++    local cmake_cache="$build_dir/CMakeCache.txt" selected_cxx cached_cxx cached_cxx_major
++
++    [[ -d "$build_dir" ]] || return
++
++    if [[ ! -e "$missing_prefix_lib" ]] && grep -R -q -F "$missing_prefix_lib" "$build_dir" 2>/dev/null; then
++        printf -- 'Removing stale ml-cpp CMake build directory that references missing %s.\n' "$missing_prefix_lib" |& tee -a "$LOG_FILE"
++        rm -rf "$build_dir"
++        return
++    fi
++
++    if [[ -f "$cmake_cache" && -n "${CMAKE_CXX_COMPILER:-}" ]]; then
++        selected_cxx="$(command -v "$CMAKE_CXX_COMPILER" 2>/dev/null || printf -- '%s' "$CMAKE_CXX_COMPILER")"
++        cached_cxx="$(sed -n 's/^CMAKE_CXX_COMPILER:[^=]*=//p' "$cmake_cache" | tail -1)"
++        if [[ -n "$cached_cxx" && -x "$cached_cxx" ]]; then
++            cached_cxx_major="$("$cached_cxx" -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1)"
++            if [[ "$cached_cxx_major" =~ ^[0-9]+$ && "$cached_cxx_major" -lt 9 ]]; then
++                printf -- 'Removing stale ml-cpp CMake build directory configured with C++20-incompatible compiler %s.\n' "$cached_cxx" |& tee -a "$LOG_FILE"
++                rm -rf "$build_dir"
++                return
++            fi
++        fi
++        if [[ -n "$cached_cxx" && "$cached_cxx" != "$selected_cxx" && "$cached_cxx" != "$CMAKE_CXX_COMPILER" ]]; then
++            printf -- 'Removing stale ml-cpp CMake build directory configured with %s; selected compiler is %s.\n' "$cached_cxx" "$selected_cxx" |& tee -a "$LOG_FILE"
++            rm -rf "$build_dir"
++        fi
++    fi
++}
++
++function installMlCppBinutilsAliases() {
++    [[ "$(uname -m)" == "s390x" ]] || return
++
++    local objcopy_path strip_path
++    objcopy_path="$(command -v objcopy || true)"
++    strip_path="$(command -v strip || true)"
++
++    if [[ -z "$objcopy_path" || -z "$strip_path" ]]; then
++        printf -- 'binutils objcopy and strip are required for the s390x ml-cpp strip task.\n' |& tee -a "$LOG_FILE"
++        exit 1
++    fi
++
++    sudo ln -sfn "$objcopy_path" /usr/local/bin/s390x-linux-gnu-objcopy
++    sudo ln -sfn "$strip_path" /usr/local/bin/s390x-linux-gnu-strip
++}
++
++function mlCppS390xPatchLooksApplied() {
++    [[ -f "cmake/linux-s390x.cmake" ]] || return 1
++    [[ -f "cmake/architecture/s390x.cmake" ]] || return 1
++    grep -q "linux-s390x" ".buildkite/scripts/steps/create_dra.sh" || return 1
++    grep -q "linux-s390x" "build.gradle" || return 1
++    grep -q "s390x" "3rd_party/3rd_party.cmake" || return 1
++    grep -q "ML_PYTORCH_LIB_DIR" "3rd_party/3rd_party.cmake" || return 1
++    grep -q "ML_ARCH_PROCESSOR" "cmake/architecture/s390x.cmake" || return 1
++    grep -q "ENV{ML_GCC_COMPILER}" "cmake/compiler/gcc.cmake" || return 1
++    grep -q "ENV{ML_BOOST_COMPILER_VER}" "cmake/variables.cmake" || return 1
++}
++
++function verifyMlCppRepo() {
++    local ml_cpp_repo_path ml_cpp_artifact_dir missing_artifacts=()
++
++    ml_cpp_repo_path="$(mlCppRepoPath)"
++
++    if [[ -n "$ml_cpp_repo_path" && ! -d "$ml_cpp_repo_path" ]]; then
++        printf -- 'Required ml-cpp Ivy repository not found at %s.\n' "$ml_cpp_repo_path" |& tee -a "$LOG_FILE"
++        printf -- 'The ml-cpp build did not create the expected Ivy repository.\n' |& tee -a "$LOG_FILE"
++        exit 1
++    fi
++
++    if [[ -n "$ml_cpp_repo_path" ]]; then
++        ml_cpp_artifact_dir="$(mlCppArtifactDir "$ml_cpp_repo_path")"
++        if hasMlCppIvyArtifacts "$ml_cpp_repo_path"; then
++            return 0
++        fi
++        for artifact in "$ml_cpp_artifact_dir/ml-cpp-${PACKAGE_VERSION}-SNAPSHOT-deps.zip" "$ml_cpp_artifact_dir/ml-cpp-${PACKAGE_VERSION}-SNAPSHOT-nodeps.zip"; do
++            [[ -f "$artifact" ]] || missing_artifacts+=("$artifact")
++        done
++
++        if (( ${#missing_artifacts[@]} > 0 )); then
++            printf -- 'Required s390x ml-cpp artifacts are missing:\n' |& tee -a "$LOG_FILE"
++            printf -- '  %s\n' "${missing_artifacts[@]}" |& tee -a "$LOG_FILE"
++            printf -- 'The ml-cpp build did not create the expected deps/nodeps artifacts.\n' |& tee -a "$LOG_FILE"
++            exit 1
++        fi
++    fi
++}
++
++function configureMlCppRepo() {
++    local ml_cpp_repo_url
++
++    verifyMlCppRepo
++    ml_cpp_repo_url="$(mlCppRepoUrl)"
++    ML_CPP_GRADLE_OPTS="-Dbuild.ml_cpp.repo=$ml_cpp_repo_url"
++    export ML_CPP_REPO ML_CPP_GRADLE_OPTS
++    grep -q "ML_CPP_REPO" "$BUILD_ENV" || printf -- "export ML_CPP_REPO=%q\n" "$ML_CPP_REPO" >> "$BUILD_ENV"
++    grep -q "ML_CPP_GRADLE_OPTS" "$BUILD_ENV" || printf -- "export ML_CPP_GRADLE_OPTS=%q\n" "$ML_CPP_GRADLE_OPTS" >> "$BUILD_ENV"
++    printf -- "Using ml-cpp Ivy repository: %s\n" "$ml_cpp_repo_url" |& tee -a "$LOG_FILE"
++}
++
++function resolveMlCppPytorchRoot() {
++    local root="$1"
++    local include_dir="$root/include"
++
++    if [[ -d "$root/include/pytorch/torch" || -d "$root/include/pytorch/c10" ]]; then
++        include_dir="$root/include/pytorch"
++    fi
++
++    if [[ -d "$include_dir" && -f "$root/lib/libtorch_cpu.so" && -f "$root/lib/libc10.so" ]]; then
++        ML_PYTORCH_HOME="$include_dir"
++        ML_PYTORCH_LIB_DIR="$root/lib"
++        return 0
++    fi
++    return 1
++}
++
++function resolveMlCppPytorchSourceBuild() {
++    local root="$1"
++    local lib_dir="$root/build/lib"
++
++    if [[ -d "$root/torch/csrc/api/include" && -f "$lib_dir/libtorch_cpu.so" && -f "$lib_dir/libc10.so" ]]; then
++        ML_PYTORCH_HOME="$root"
++        ML_PYTORCH_LIB_DIR="$lib_dir"
++        return 0
++    fi
++    return 1
++}
++
++function validateMlCppPytorch() {
++    if [[ -z "$ML_PYTORCH_HOME" || -z "$ML_PYTORCH_LIB_DIR" ]]; then
++        printf -- 'ML_PYTORCH_HOME and ML_PYTORCH_LIB_DIR must both be set for the s390x ml-cpp build.\n' |& tee -a "$LOG_FILE"
++        [[ -n "${ML_PYTORCH_SEARCH_PATHS:-}" ]] && printf -- 'Searched for a GCC13 PyTorch root in:\n%s\n' "$ML_PYTORCH_SEARCH_PATHS" |& tee -a "$LOG_FILE"
++        printf -- 'Provide ML_PYTORCH_ROOT, or mount/copy the GCC13 PyTorch bundle to one of the searched locations.\n' |& tee -a "$LOG_FILE"
++        exit 1
++    fi
++    [[ -d "$ML_PYTORCH_HOME" ]] || { printf -- 'ML_PYTORCH_HOME does not exist: %s\n' "$ML_PYTORCH_HOME" |& tee -a "$LOG_FILE"; exit 1; }
++    [[ -f "$ML_PYTORCH_LIB_DIR/libtorch_cpu.so" && -f "$ML_PYTORCH_LIB_DIR/libc10.so" ]] || { printf -- 'ML_PYTORCH_LIB_DIR must contain libtorch_cpu.so and libc10.so: %s\n' "$ML_PYTORCH_LIB_DIR" |& tee -a "$LOG_FILE"; exit 1; }
++
++    if command -v readelf >/dev/null 2>&1; then
++        local torch_comment
++        torch_comment="$(readelf -p .comment "$ML_PYTORCH_LIB_DIR/libtorch_cpu.so" 2>/dev/null || true)"
++        if [[ "$torch_comment" == *"GCC:"* && ! "$torch_comment" =~ GCC:.*13\. ]]; then
++            printf -- 'Warning: libtorch_cpu.so was not built with GCC 13; continuing with the available toolchain.\n' |& tee -a "$LOG_FILE"
++        fi
++    fi
++}
++
++function isSelectedCompilerPytorchLib() {
++    local libtorch_cpu="$1"
++    local torch_comment
++    local selected_major
++
++    if [[ ! -f "$libtorch_cpu" ]]; then
++        return 1
++    fi
++
++    if ! command -v readelf >/dev/null 2>&1; then
++        return 0
++    fi
++
++    torch_comment="$(readelf -p .comment "$libtorch_cpu" 2>/dev/null || true)"
++    if [[ "$torch_comment" != *"GCC:"* ]]; then
++        return 0
++    fi
++
++    selected_major="$("$CXX" -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1 || true)"
++    [[ -n "$selected_major" && "$torch_comment" =~ GCC:.*${selected_major}\. ]]
++}
++
++function configureGcc13Toolchain() {
++    local version gcc_bin gxx_bin default_gcc_major
++
++    ML_PYTORCH_GCC13_AVAILABLE="false"
++    if [[ -f /opt/rh/gcc-toolset-13/enable ]]; then
++        # shellcheck disable=SC1091
++        source /opt/rh/gcc-toolset-13/enable
++    fi
++
++    if [[ -x /opt/rh/gcc-toolset-13/root/usr/bin/gcc && -x /opt/rh/gcc-toolset-13/root/usr/bin/g++ ]]; then
++        CC="/opt/rh/gcc-toolset-13/root/usr/bin/gcc"; CXX="/opt/rh/gcc-toolset-13/root/usr/bin/g++"
++        export CC CXX ML_PYTORCH_GCC13_AVAILABLE="true" CMAKE_C_COMPILER="$CC" CMAKE_CXX_COMPILER="$CXX"
++        printf -- 'Using GCC 13 toolchain for PyTorch: CC=%s CXX=%s\n' "$CC" "$CXX" |& tee -a "$LOG_FILE"
++        return
++    fi
++
++    for version in 15 14 13 12 11 10 9; do
++        for gcc_bin in "gcc-$version" "gcc$version"; do
++            [[ "$gcc_bin" == gcc-* ]] && gxx_bin="g++-${version}" || gxx_bin="g++${version}"
++            if command -v "$gcc_bin" >/dev/null 2>&1 && command -v "$gxx_bin" >/dev/null 2>&1; then
++                CC="$(command -v "$gcc_bin")"; CXX="$(command -v "$gxx_bin")"
++                export CC CXX ML_PYTORCH_GCC13_AVAILABLE="true" CMAKE_C_COMPILER="$CC" CMAKE_CXX_COMPILER="$CXX"
++                printf -- 'Using GCC %s toolchain for PyTorch: CC=%s CXX=%s\n' "$version" "$CC" "$CXX" |& tee -a "$LOG_FILE"
++                return
++            fi
++        done
++    done
++
++    if command -v gcc >/dev/null 2>&1 && command -v g++ >/dev/null 2>&1; then
++        default_gcc_major="$(gcc -dumpfullversion -dumpversion 2>/dev/null | cut -d. -f1)"
++        if [[ "$default_gcc_major" =~ ^[0-9]+$ && "$default_gcc_major" -ge 9 ]]; then
++            CC="$(command -v gcc)"; CXX="$(command -v g++)"
++            export CC CXX ML_PYTORCH_GCC13_AVAILABLE="true" CMAKE_C_COMPILER="$CC" CMAKE_CXX_COMPILER="$CXX"
++            printf -- 'Using default GCC %s toolchain for PyTorch: CC=%s CXX=%s\n' "$default_gcc_major" "$CC" "$CXX" |& tee -a "$LOG_FILE"
++            return
++        fi
++    fi
++
++    CC="${CC:-gcc}"; CXX="${CXX:-g++}"
++    export CC CXX CMAKE_C_COMPILER="$CC" CMAKE_CXX_COMPILER="$CXX"
++    printf -- 'Warning: GCC >= 9 was not found; building PyTorch with CC=%s CXX=%s.\n' "$CC" "$CXX" |& tee -a "$LOG_FILE"
++    printf -- 'Using selected toolchain for PyTorch: CC=%s CXX=%s\n' "$CC" "$CXX" |& tee -a "$LOG_FILE"
++}
++
++function buildMlCppPytorch() {
++    [[ "$ML_PYTORCH_BUILD_FROM_SOURCE" == "true" ]] || return
++
++    configureGcc13Toolchain
++    ensureBuildPythonUsable
++
++    if [[ -d "$ML_PYTORCH_SOURCE_DIR" && ! -f "$ML_PYTORCH_SOURCE_DIR/torch/abi-check.cpp" ]]; then
++        printf -- 'Removing incomplete PyTorch source at %s; missing torch/abi-check.cpp.\n' "$ML_PYTORCH_SOURCE_DIR" |& tee -a "$LOG_FILE"
++        rm -rf "$ML_PYTORCH_SOURCE_DIR"
++    fi
++
++    if resolveMlCppPytorchSourceBuild "$ML_PYTORCH_SOURCE_DIR"; then
++        if isSelectedCompilerPytorchLib "$ML_PYTORCH_LIB_DIR/libtorch_cpu.so"; then
++            printf -- 'Using existing PyTorch source build: source=%s lib=%s\n' "$ML_PYTORCH_HOME" "$ML_PYTORCH_LIB_DIR" |& tee -a "$LOG_FILE"
++            return
++        fi
++        if [[ "$ML_PYTORCH_GCC13_AVAILABLE" != "true" ]]; then
++            printf -- 'Using existing PyTorch build because no preferred compiler was found.\n' |& tee -a "$LOG_FILE"
++            return
++        fi
++        printf -- 'Existing PyTorch source build was not built with the selected compiler; rebuilding it.\n' |& tee -a "$LOG_FILE"
++        rm -rf "$ML_PYTORCH_SOURCE_DIR/build"
++        ML_PYTORCH_HOME=""
++        ML_PYTORCH_LIB_DIR=""
++    fi
++
++    printf -- 'Building PyTorch %s from source for s390x ml-cpp.\n' "$ML_PYTORCH_REF" |& tee -a "$LOG_FILE"
++    if [[ ! -d "$ML_PYTORCH_SOURCE_DIR/.git" ]]; then
++        local clone_attempt
++        for clone_attempt in 1 2 3; do
++            rm -rf "$ML_PYTORCH_SOURCE_DIR"
++            if git clone --depth 1 --branch "$ML_PYTORCH_REF" "$ML_PYTORCH_REPO_URL" "$ML_PYTORCH_SOURCE_DIR"; then
++                break
++            fi
++            if [[ "$clone_attempt" == "3" ]]; then
++                return 1
++            fi
++            printf -- 'PyTorch clone failed on attempt %s; retrying with a clean source directory.\n' "$clone_attempt" |& tee -a "$LOG_FILE"
++            sleep $((clone_attempt * 15))
++        done
++    else
++        printf -- 'Using existing PyTorch source at %s\n' "$ML_PYTORCH_SOURCE_DIR" |& tee -a "$LOG_FILE"
++    fi
++
++    cd "$ML_PYTORCH_SOURCE_DIR"
++    git submodule sync --recursive
++    local submodule_attempt required_submodule_file incomplete_submodule
++    for submodule_attempt in 1 2 3; do
++        if git submodule update --init --recursive --jobs "${ML_PYTORCH_BUILD_PARALLEL_LEVEL}"; then
++            incomplete_submodule=0
++            for required_submodule_file in third_party/FP16/CMakeLists.txt third_party/FXdiv/CMakeLists.txt third_party/psimd/CMakeLists.txt; do
++                if [[ ! -f "$required_submodule_file" ]]; then
++                    printf -- 'PyTorch submodule update left %s missing; removing %s before retry.\n' "$required_submodule_file" "${required_submodule_file%/*}" |& tee -a "$LOG_FILE"
++                    rm -rf "${required_submodule_file%/*}"
++                    incomplete_submodule=1
++                fi
++            done
++            if [[ "$incomplete_submodule" == "0" ]]; then
++                break
++            fi
++        fi
++        if [[ "$submodule_attempt" == "3" ]]; then
++            return 1
++        fi
++        printf -- 'PyTorch submodule update failed on attempt %s; retrying.\n' "$submodule_attempt" |& tee -a "$LOG_FILE"
++        cd "$SOURCE_ROOT"
++        rm -rf "$ML_PYTORCH_SOURCE_DIR"
++        git clone --depth 1 --branch "$ML_PYTORCH_REF" "$ML_PYTORCH_REPO_URL" "$ML_PYTORCH_SOURCE_DIR" || return 1
++        cd "$ML_PYTORCH_SOURCE_DIR"
++        git submodule sync --recursive || true
++        sleep $((submodule_attempt * 15))
++    done
++
++    if ! runBuildPython -m pip --version >/dev/null 2>&1; then
++        local python_version get_pip_url
++        python_version="$(runBuildPython -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
++        get_pip_url="https://bootstrap.pypa.io/get-pip.py"
++        if [[ "$python_version" == "3.9" ]]; then
++            get_pip_url="https://bootstrap.pypa.io/pip/3.9/get-pip.py"
++        elif [[ "$python_version" == "3.8" ]]; then
++            get_pip_url="https://bootstrap.pypa.io/pip/3.8/get-pip.py"
++        fi
++        curl -SL -o get-pip.py "$get_pip_url"
++        runBuildPython get-pip.py --user
++    fi
++
++    local pip_user_opts=(--user)
++    runBuildPython -m pip install --help | grep -q -- '--break-system-packages' && pip_user_opts+=(--break-system-packages)
++
++    cd "$ML_PYTORCH_SOURCE_DIR"
++    runBuildPython -m pip install "${pip_user_opts[@]}" --upgrade pip setuptools wheel cython 'scikit-build<0.18'
++    runBuildPython -m pip install "${pip_user_opts[@]}" -r requirements.txt
++    runBuildPython -m pip install "${pip_user_opts[@]}" pyyaml typing_extensions numpy ninja cmake cffi sympy networkx jinja2 fsspec filelock cython
++
++    export PATH="$HOME/.local/bin:$PATH"
++    export MAX_JOBS="$ML_PYTORCH_BUILD_PARALLEL_LEVEL"
++    export BUILD_SHARED_LIBS=ON
++    for disabled in BUILD_TEST BUILD_PYTHON BUILD_CAFFE2_OPS USE_CUDA USE_ROCM USE_DISTRIBUTED USE_MPI USE_NCCL USE_GLOO USE_MKLDNN USE_FBGEMM USE_NNPACK USE_QNNPACK USE_XNNPACK USE_KINETO USE_MPS; do
++        export "$disabled=0"
++    done
++
++    cd "$ML_PYTORCH_SOURCE_DIR"
++    runBuildPython "$ML_PYTORCH_SOURCE_DIR/tools/build_libtorch.py" |& tee -a "$LOG_FILE"
++
++    resolveMlCppPytorchSourceBuild "$ML_PYTORCH_SOURCE_DIR" || { printf -- 'PyTorch build did not create required libtorch artifacts under %s/build/lib.\n' "$ML_PYTORCH_SOURCE_DIR" |& tee -a "$LOG_FILE"; exit 1; }
++}
++
++function configureMlCppPytorch() {
++    local candidate candidates
++
++    if [[ -n "$ML_PYTORCH_ROOT" ]]; then
++        if ! resolveMlCppPytorchRoot "$ML_PYTORCH_ROOT"; then
++            printf -- 'ML_PYTORCH_ROOT must contain include/, lib/libtorch_cpu.so and lib/libc10.so: %s\n' "$ML_PYTORCH_ROOT" |& tee -a "$LOG_FILE"
++            exit 1
++        fi
++    elif [[ -z "$ML_PYTORCH_HOME" && -z "$ML_PYTORCH_LIB_DIR" ]]; then
++        candidates=("$ML_CPP_SOURCE_DIR/deps/pytorch-gcc13" "$SOURCE_ROOT/deps/pytorch-gcc13" "$SOURCE_ROOT/pytorch-gcc13" "/usr/local/gcc133" "/opt/pytorch-gcc13" "/usr/local/pytorch-gcc13")
++        ML_PYTORCH_SEARCH_PATHS="$(printf -- '  %s\n' "${candidates[@]}")"
++        for candidate in "${candidates[@]}"; do
++            resolveMlCppPytorchRoot "$candidate" && break
++        done
++    fi
++
++    [[ -n "$ML_PYTORCH_HOME" && -n "$ML_PYTORCH_LIB_DIR" ]] || buildMlCppPytorch
++
++    validateMlCppPytorch
++    export ML_PYTORCH_HOME ML_PYTORCH_LIB_DIR
++    grep -q "ML_PYTORCH_HOME" "$BUILD_ENV" || printf -- "export ML_PYTORCH_HOME=%q\n" "$ML_PYTORCH_HOME" >> "$BUILD_ENV"
++    grep -q "ML_PYTORCH_LIB_DIR" "$BUILD_ENV" || printf -- "export ML_PYTORCH_LIB_DIR=%q\n" "$ML_PYTORCH_LIB_DIR" >> "$BUILD_ENV"
++    printf -- "Using GCC13 PyTorch for ml-cpp: include=%s lib=%s\n" "$ML_PYTORCH_HOME" "$ML_PYTORCH_LIB_DIR" |& tee -a "$LOG_FILE"
++}
++
++function buildMlCpp() {
++    local ml_cpp_repo_path ml_cpp_artifact_dir ml_cpp_dist_dir ml_cpp_deps_zip ml_cpp_nodeps_zip ml_cpp_cmake_flags="${CMAKE_FLAGS:-}" boost_compiler_tag
++
++    ml_cpp_repo_path="$(mlCppRepoPath)"
++    if [[ -z "$ml_cpp_repo_path" ]]; then
++        printf -- 'Using remote ml-cpp Ivy repository: %s\n' "$(mlCppRepoUrl)" |& tee -a "$LOG_FILE"
++        configureMlCppRepo
++        return
++    fi
++
++    ml_cpp_artifact_dir="$(mlCppArtifactDir "$ml_cpp_repo_path")"
++    if [[ "$ML_CPP_FORCE_REBUILD" != "true" ]] && hasMlCppIvyArtifacts "$ml_cpp_repo_path"; then
++        printf -- 'Using existing s390x ml-cpp Ivy artifacts from %s\n' "$ml_cpp_artifact_dir" |& tee -a "$LOG_FILE"
++        patchMlCppS390xBoostDepsZip "$ml_cpp_artifact_dir/ml-cpp-${PACKAGE_VERSION}-SNAPSHOT-deps.zip"
++        configureMlCppRepo
++        return
++    fi
++
++    [[ -d "$ML_CPP_SOURCE_DIR" ]] || { printf -- 'ml-cpp source directory not found: %s\n' "$ML_CPP_SOURCE_DIR" |& tee -a "$LOG_FILE"; exit 1; }
++
++    installMlCppJava
++    installMlCppBoost
++    installMlCppSystemPrefixLinks
++    installMlCppBinutilsAliases
++    configureMlCppPytorch
++    configureGcc13Toolchain
++    cleanStaleMlCppBuildDir
++
++    cd "$ML_CPP_SOURCE_DIR"
++    ml_cpp_dist_dir="$ML_CPP_SOURCE_DIR/build/distributions"
++    ml_cpp_deps_zip="$ml_cpp_dist_dir/ml-cpp-${PACKAGE_VERSION}-SNAPSHOT-deps.zip"
++    ml_cpp_nodeps_zip="$ml_cpp_dist_dir/ml-cpp-${PACKAGE_VERSION}-SNAPSHOT-nodeps.zip"
++    if [[ -f "$ml_cpp_nodeps_zip" ]]; then
++        [[ -f "$ml_cpp_deps_zip" ]] || ensureMlCppDepsZip "$ml_cpp_deps_zip"
++        patchMlCppS390xBoostDepsZip "$ml_cpp_deps_zip"
++        mkdir -p "$ml_cpp_artifact_dir"
++        cp "$ml_cpp_deps_zip" "$ml_cpp_nodeps_zip" "$ml_cpp_artifact_dir/"
++        printf -- 'Using existing ml-cpp artifacts from %s\n' "$ml_cpp_dist_dir" |& tee -a "$LOG_FILE"
++        configureMlCppRepo
++        return
++    fi
++
++    printf -- 'Building s390x ml-cpp artifacts.\n' |& tee -a "$LOG_FILE"
++    export GRADLE_USER_HOME=$SOURCE_ROOT/.gradle
++    if [[ -n "${CMAKE_C_COMPILER:-}" && -n "${CMAKE_CXX_COMPILER:-}" ]]; then
++        export ML_GCC_COMPILER="$CMAKE_C_COMPILER" ML_GXX_COMPILER="$CMAKE_CXX_COMPILER"
++        ml_cpp_cmake_flags="${ml_cpp_cmake_flags} -DCMAKE_C_COMPILER=$CMAKE_C_COMPILER -DCMAKE_CXX_COMPILER=$CMAKE_CXX_COMPILER -DML_GCC_COMPILER=$CMAKE_C_COMPILER -DML_GXX_COMPILER=$CMAKE_CXX_COMPILER"
++    fi
++    if boost_compiler_tag="$(mlCppBoostCompilerTag)"; then
++        export ML_BOOST_COMPILER_VER="$boost_compiler_tag"
++        ml_cpp_cmake_flags="${ml_cpp_cmake_flags} -DBoost_COMPILER=$boost_compiler_tag"
++    fi
++    CPP_CROSS_COMPILE=s390x CMAKE_BUILD_PARALLEL_LEVEL="${ML_CPP_BUILD_PARALLEL_LEVEL:-4}" JAVA_HOME="$ML_CPP_JAVA_HOME" PATH="$ML_CPP_JAVA_HOME/bin:$PATH" CMAKE_FLAGS="$ml_cpp_cmake_flags" BOOST_ROOT="$ML_CPP_BOOST_ROOT" ML_PYTORCH_HOME="$ML_PYTORCH_HOME" ML_PYTORCH_LIB_DIR="$ML_PYTORCH_LIB_DIR" ./gradlew ${ML_CPP_GRADLE_TASKS} -Dbuild.snapshot=true |& tee -a "$LOG_FILE"
++
++    [[ -f "$ml_cpp_deps_zip" ]] || ensureMlCppDepsZip "$ml_cpp_deps_zip"
++    patchMlCppS390xBoostDepsZip "$ml_cpp_deps_zip"
++    mkdir -p "$ml_cpp_artifact_dir"
++    cp "$ml_cpp_deps_zip" "$ml_cpp_nodeps_zip" "$ml_cpp_artifact_dir/"
++
++    configureMlCppRepo
++}
++
++if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
++    buildMlCpp "$@"
++fi

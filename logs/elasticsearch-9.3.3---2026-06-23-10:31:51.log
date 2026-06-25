@@ -1,0 +1,7 @@
+SYSTEM DETAILS
+Request details : PACKAGE NAME= elasticsearch , VERSION= 9.3.3 
+Sudo : Yes
+Docker : No 
+Please install Docker based on your distro. 
+
+Cleaned up the artifacts.
