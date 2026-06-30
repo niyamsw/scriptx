@@ -346,9 +346,9 @@ index 7c781d85..861c1d86 100644
  
  # if configuration cache enabled then enable parallel support too
  org.gradle.configuration-cache.parallel=true
-+org.gradle.java.installations.auto-detect=true
++org.gradle.java.installations.auto-detect=false
 +org.gradle.java.installations.auto-download=false
-+org.gradle.java.installations.paths=/usr/lib/jvm/jdk-22.0.2+9,/usr/lib/jvm/java-1.21.0-openjdk-s390x,/usr/lib/jvm/java-1.17.0-openjdk-s390x
++org.gradle.java.installations.fromEnv=RUNTIME_JAVA_HOME,JAVA_HOME,ES_JAVA_HOME
 diff --git a/gradle/verification-metadata.xml b/gradle/verification-metadata.xml
 index ee6270a3..68bd45fa 100644
 --- a/gradle/verification-metadata.xml
