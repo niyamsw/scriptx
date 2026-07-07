@@ -10,7 +10,7 @@ USER_IN_GROUP_DOCKER=$(id -nGz $USER | tr '\0' '\n' | grep '^docker$' | wc -l)
 set -e -o pipefail
 
 PACKAGE_NAME="elasticsearch"
-PACKAGE_VERSION="9.3.3"
+PACKAGE_VERSION="9.4.3"
 SOURCE_ROOT="$(pwd)"
 PATCH_URL="https://raw.githubusercontent.com/niyamsw/scriptx/refs/heads/main/patch"
 #PATCH_URL="https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Elasticsearch/${PACKAGE_VERSION}/patch"
@@ -23,6 +23,9 @@ ML_CPP_PATCH_URL_BASE="${ML_CPP_PATCH_URL_BASE:-https://raw.githubusercontent.co
 ML_CPP_PATCH_URL="${ML_CPP_PATCH_URL:-${ML_CPP_PATCH_URL_BASE}/ml-cpp.patch}"
 ML_CPP_PATCH_DIR="${ML_CPP_PATCH_DIR:-$SOURCE_ROOT/ml-cpp-patches}"
 PATCH_DIR="$ML_CPP_PATCH_DIR"
+DEBIAN_DOCKER_IMAGE="${DEBIAN_DOCKER_IMAGE:-public.ecr.aws/docker/library/debian:bookworm-slim}"
+UBUNTU_DOCKER_IMAGE="${UBUNTU_DOCKER_IMAGE:-public.ecr.aws/docker/library/ubuntu:24.04}"
+GOLANG_DOCKER_IMAGE="${GOLANG_DOCKER_IMAGE:-public.ecr.aws/docker/library/golang:1.24-alpine}"
 ML_CPP_GRADLE_OPTS=""
 ML_CPP_SOURCE_DIR="${ML_CPP_SOURCE_DIR:-$SOURCE_ROOT/ml-cpp}"
 LOG_FILE="$SOURCE_ROOT/logs/${PACKAGE_NAME}-${PACKAGE_VERSION}-$(date +"%F-%T").log"
@@ -31,7 +34,18 @@ NON_ROOT_USER="$(whoami)"
 FORCE="false"
 BUILD_ENV="$HOME/setenv.sh"
 CPU_NUM="$(grep -c ^processor /proc/cpuinfo)"
-ES9_OPTS="-x :libs:entitlement:bridge:compileMain23Java -x :libs:entitlement:compileMain23Java -x :libs:native:compileMain22Java -x :libs:simdvec:compileMain22Java"
+export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
+ES9_EXCLUDED_TASKS=(
+    ":libs:entitlement:bridge:compileMain22Java"
+    ":libs:entitlement:bridge:compileMain23Java"
+    ":libs:entitlement:compileMain22Java"
+    ":libs:entitlement:compileMain23Java"
+    ":libs:entitlement:compileMain25Java"
+    ":libs:entitlement:compileMain26Java"
+    ":libs:native:compileMain22Java"
+    ":libs:simdvec:compileMain22Java"
+)
+ES9_OPTS=""
 BUILD_TAR_ONLY="false"
 
 trap cleanup 0 1 2 ERR
@@ -117,6 +131,112 @@ function cleanup() {
     printf -- '\nCleaned up the artifacts.\n' >>"$LOG_FILE"
 }
 
+function runningInContainer() {
+    [[ -f /.dockerenv || -f /run/.containerenv ]]
+}
+
+function ensureNestedDockerUsesVfs() {
+    local driver
+    local attempt
+    local data_root="${SOURCE_ROOT}/.docker-vfs"
+
+    runningInContainer || return
+    mkdir -p "${SOURCE_ROOT}/logs"
+    driver="$(docker info --format '{{.Driver}}' 2>/dev/null || true)"
+    [[ "$driver" == "vfs" ]] && return
+
+    if [[ -n "$driver" ]]; then
+        printf -- 'Docker storage driver : %s; restarting Docker with vfs for nested builds.\n' "$driver" |& tee -a "$LOG_FILE"
+    else
+        printf -- 'Docker daemon is not responding; starting Docker with vfs for nested builds.\n' |& tee -a "$LOG_FILE"
+    fi
+    sudo pkill dockerd 2>/dev/null || true
+    sleep 5
+    sudo rm -f /etc/docker/daemon.json
+    sudo rm -rf "$data_root"
+    sudo mkdir -p "$data_root"
+    sudo dockerd --storage-driver=vfs --data-root "$data_root" >"${SOURCE_ROOT}/logs/dockerd-vfs.log" 2>&1 &
+    for attempt in {1..12}; do
+        sleep 5
+        docker info >/dev/null 2>&1 && break
+    done
+    sudo chmod ugo+rw /var/run/docker.sock
+    docker info --format 'Docker storage driver : {{.Driver}}' |& tee -a "$LOG_FILE"
+}
+
+function pullDockerImageWithRetries() {
+    local image="$1"
+    local attempt
+
+    for attempt in 1 2 3; do
+        docker pull "$image" && return
+        sleep $((attempt * 20))
+    done
+    docker pull "$image"
+}
+
+function configureNestedDockerWrapper() {
+    local real_docker
+    local wrapper_dir="$SOURCE_ROOT/.docker-wrapper"
+
+    runningInContainer || return
+    real_docker="$(command -v docker)"
+    if [[ "$real_docker" == "$wrapper_dir/docker" ]]; then
+        real_docker="/usr/bin/docker"
+    fi
+    mkdir -p "$wrapper_dir"
+    cat > "$wrapper_dir/docker" <<EOF
+#!/bin/bash
+set -e
+real_docker="$real_docker"
+
+if [[ "\$1" == "buildx" && "\${2:-}" == "build" ]]; then
+    shift 2
+    args=()
+    while [[ \$# -gt 0 ]]; do
+        case "\$1" in
+            --load|--progress=*|--provenance=*|--sbom=*|--attest=*)
+                shift
+                ;;
+            --builder|--progress|--provenance|--sbom|--attest)
+                shift 2
+                ;;
+            *)
+                args+=("\$1")
+                shift
+                ;;
+        esac
+    done
+    exec env DOCKER_BUILDKIT=0 "\$real_docker" build "\${args[@]}"
+fi
+
+if [[ "\$1" == "build" ]]; then
+    shift
+    args=()
+    while [[ \$# -gt 0 ]]; do
+        case "\$1" in
+            --load|--progress=*|--provenance=*|--sbom=*|--attest=*)
+                shift
+                ;;
+            --builder|--progress|--provenance|--sbom|--attest)
+                shift 2
+                ;;
+            *)
+                args+=("\$1")
+                shift
+                ;;
+        esac
+    done
+    exec env DOCKER_BUILDKIT=0 "\$real_docker" build "\${args[@]}"
+fi
+
+exec "\$real_docker" "\$@"
+EOF
+    chmod +x "$wrapper_dir/docker"
+    export PATH="$wrapper_dir:$PATH"
+    printf -- 'Docker wrapper : converting buildx builds to classic docker build in nested containers.\n' |& tee -a "$LOG_FILE"
+}
+
 function getJavaUrl() {
     local jruntime=$1
     local jdist=$2
@@ -164,6 +284,21 @@ function mlCppRepoUrl() {
     fi
 }
 
+function configureEs9GradleOpts() {
+    local task
+    local opts=()
+
+    for task in "${ES9_EXCLUDED_TASKS[@]}"; do
+        if ./gradlew -q help --task "$task" >/dev/null 2>&1; then
+            opts+=("-x" "$task")
+        else
+            printf -- 'Skipping missing Gradle excluded task: %s\n' "$task" |& tee -a "$LOG_FILE"
+        fi
+    done
+
+    ES9_OPTS="${opts[*]}"
+}
+
 function applyMlCppPatch() {
     local patch_file="$SOURCE_ROOT/ml-cpp.patch" build_script_rel="s390x/build_ml_cpp.sh" build_script="$ML_CPP_SOURCE_DIR/s390x/build_ml_cpp.sh"
 
@@ -175,6 +310,8 @@ function applyMlCppPatch() {
         git apply "$patch_file"
     elif git apply --reverse --check "$patch_file" >/dev/null 2>&1; then
         printf -- 'ml-cpp s390x patch is already applied.\n' |& tee -a "$LOG_FILE"
+    elif [[ -f "$build_script" ]]; then
+        printf -- 'ml-cpp s390x build script already exists; treating ml-cpp source as patched.\n' |& tee -a "$LOG_FILE"
     else
         printf -- 'Unable to apply ml-cpp s390x patch.\n' |& tee -a "$LOG_FILE"
         exit 1
@@ -252,6 +389,13 @@ function createS390xGradleFile() {
         ' > "${dist_dir}/build.gradle"
 }
 
+function makeDockerfileClassicBuilderCompatible() {
+    local dockerfile="$SOURCE_ROOT/elasticsearch/distribution/docker/src/docker/dockerfiles/default/Dockerfile"
+
+    [[ -f "$dockerfile" ]] || return
+    sed -i 's|^COPY --chmod=0555 bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh$|COPY bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh\nRUN chmod 0555 /usr/local/bin/docker-entrypoint.sh|' "$dockerfile"
+}
+
 function configureAndInstall() {
     printf -- '\nConfiguration and Installation started \n'
     # Install Java
@@ -265,12 +409,15 @@ function configureAndInstall() {
 
     export PATH=$ES_JAVA_HOME/bin:$PATH
     printf -- "export PATH=$PATH\n" >> "$BUILD_ENV"
+    configureNestedDockerWrapper
+    printf -- "export PATH=$PATH\n" >> "$BUILD_ENV"
     java -version
     printf -- "Installation of %s is successful\n" "$JAVA_PROVIDED"
     buildMlCpp
 
     # Build JANSI v2.4.0 for auto-generation of credentials for the elastic user
     cd "$SOURCE_ROOT"
+    rm -rf "$SOURCE_ROOT/jansi" "$SOURCE_ROOT/jansi-jar"
     git clone -b jansi-2.4.0 https://github.com/fusesource/jansi.git
     cd jansi
     make clean-native native OS_NAME=Linux OS_ARCH=s390x
@@ -291,13 +438,17 @@ function configureAndInstall() {
 
     # Build osixia/light-baseimage image for osixia/openldap
     cd "$SOURCE_ROOT"
+    rm -rf "$SOURCE_ROOT/docker-light-baseimage"
     git clone -b v1.2.0 https://github.com/osixia/docker-light-baseimage.git
     cd docker-light-baseimage/
     curl -sSL "${PATCH_URL}/docker-light-baseimage.patch" | git apply -
+    sed -i "s|^FROM .*debian:bookworm-slim|FROM ${DEBIAN_DOCKER_IMAGE}|" image/Dockerfile
+    pullDockerImageWithRetries "$DEBIAN_DOCKER_IMAGE"
     make build
 
     # Build osixia/openldap image for openldap-fixture:1.0
     cd "$SOURCE_ROOT"
+    rm -rf "$SOURCE_ROOT/docker-openldap"
     git clone -b v1.4.0 https://github.com/osixia/docker-openldap.git
     cd docker-openldap/
     curl -sSL "${PATCH_URL}/docker-openldap.patch" | git apply -
@@ -306,6 +457,7 @@ function configureAndInstall() {
     # Build ZSTD v1.5.5 for starting Elasticsearch server
     cd "$SOURCE_ROOT"
     ZSTD_VERSION=1.5.5
+    rm -rf "$SOURCE_ROOT/zstd-$ZSTD_VERSION" "$SOURCE_ROOT/v$ZSTD_VERSION.tar.gz" "$SOURCE_ROOT/zstd-native-dep"
     wget https://github.com/facebook/zstd/archive/refs/tags/v$ZSTD_VERSION.tar.gz
     tar -xzvf v$ZSTD_VERSION.tar.gz
     cd zstd-$ZSTD_VERSION
@@ -316,11 +468,13 @@ function configureAndInstall() {
     cd "$SOURCE_ROOT"
     # Download and configure ElasticSearch
     printf -- 'Downloading Elasticsearch. Please wait.\n'
+    rm -rf "$SOURCE_ROOT/elasticsearch"
     git clone --depth 1 -b v$PACKAGE_VERSION $ES_REPO_URL
     cd "$SOURCE_ROOT/elasticsearch"
 
     # Apply patch
     curl -sSL "${PATCH_URL}/elasticsearch.patch" | git apply -
+    makeDockerfileClassicBuilderCompatible
 
     mkdir -p "$SOURCE_ROOT/elasticsearch/libs/"
     cp -r "$SOURCE_ROOT/zstd-$ZSTD_VERSION/_build/usr/local/lib/" "$SOURCE_ROOT/elasticsearch/libs/zstd/"
@@ -344,6 +498,8 @@ function configureAndInstall() {
 
     # build openldap-fixture image for :x-pack:qa:openldap-tests:test
     cd "$SOURCE_ROOT/elasticsearch/x-pack/test/idp-fixture/src/main/resources/openldap/"
+    sed -i "s|^FROM ubuntu:24.04|FROM ${UBUNTU_DOCKER_IMAGE}|" Dockerfile
+    pullDockerImageWithRetries "$UBUNTU_DOCKER_IMAGE"
     docker build -f Dockerfile -t docker.elastic.co/elasticsearch-dev/openldap-fixture:1.0 .
 
     # build es-smb-fixture image for :x-pack:qa:third-party:active-directory:test
@@ -352,10 +508,13 @@ function configureAndInstall() {
 
     # build minio image for :modules:repository-s3:qa:third-party:test
     cd "$SOURCE_ROOT"
+    rm -rf "$SOURCE_ROOT/minio"
     mkdir -p "minio"
     cd "minio"
     wget "https://raw.githubusercontent.com/linux-on-ibm-z/dockerfile-examples/1297255f6d0b235c23b5eae2644fdd65584199a6/Minio/Dockerfile"
     sed -i 's|COPY --from=build /go/bin/curl\* /usr/bin/|COPY --from=build /usr/bin/curl* /usr/bin/|' Dockerfile
+    sed -i "s|golang:1.24-alpine|${GOLANG_DOCKER_IMAGE}|g" Dockerfile
+    pullDockerImageWithRetries "$GOLANG_DOCKER_IMAGE"
     docker build --build-arg TARGETARCH=s390x --build-arg RELEASE="RELEASE.2025-09-07T16-13-09Z" --build-arg MC_RELEASE="RELEASE.2025-08-13T08-35-41Z" -t  minio/minio:RELEASE.2025-09-07T16-13-09Z --platform=linux/s390x .
 
     cd "$SOURCE_ROOT/elasticsearch"
@@ -364,7 +523,10 @@ function configureAndInstall() {
     printf -- 'Building Elasticsearch \n'
     printf -- 'Build might take some time. Sit back and relax\n'
     export GRADLE_USER_HOME=$SOURCE_ROOT/.gradle
+    ./gradlew --stop >/dev/null 2>&1 || true
+    configureEs9GradleOpts
     printf -- "export GRADLE_USER_HOME=$GRADLE_USER_HOME\n" >> "$BUILD_ENV"
+    printf -- "export DOCKER_BUILDKIT=$DOCKER_BUILDKIT\n" >> "$BUILD_ENV"
     printf -- "export ES9_OPTS=\"$ES9_OPTS\"\n" >> "$BUILD_ENV"
 
     ./gradlew :distribution:archives:linux-s390x-tar:assemble $ES9_OPTS $ML_CPP_GRADLE_OPTS --max-workers="$CPU_NUM" --parallel | tee "$LOG_FILE"
@@ -498,8 +660,10 @@ function printSummary() {
     printf -- '\n*****************************************************************************************************\n'
 }
 
+ensureNestedDockerUsesVfs
 logDetails
 prepare
+ensureNestedDockerUsesVfs
 
 printf -- "Installing %s %s for %s and %s\n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" "$JAVA_PROVIDED" |& tee -a "$LOG_FILE"
 printf -- "Installing dependencies... it may take some time.\n"
@@ -520,7 +684,27 @@ case "$DISTRO" in
     ;;
 
 "sles-15.7")
-    sudo zypper install -y curl git gzip tar wget patch make gcc gcc-c++ fontconfig dejavu-fonts gawk bzip2 zip unzip zlib-devel libxml2-devel python3 python3-devel python3-pip cmake ninja | tee -a "$LOG_FILE"
+    sudo zypper install -y curl git gzip tar wget patch make gcc gcc-c++ fontconfig dejavu-fonts gawk bzip2 zip unzip zlib-devel libxml2-devel libexpat1 python3 python3-devel python3-pip cmake ninja | tee -a "$LOG_FILE"
+    sudo zypper install -y python311 python311-devel python311-pip |& tee -a "$LOG_FILE" || true
+    command -v python3.11 >/dev/null 2>&1 || sudo zypper install -y python39 python39-devel python39-pip |& tee -a "$LOG_FILE" || true
+    sudo zypper install -y gcc14 gcc14-c++ libstdc++6-devel-gcc14 |& tee -a "$LOG_FILE" || true
+    if [[ -n "${PYTHON_BIN:-}" ]] && ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+        PYTHON_BIN=""
+    fi
+    for python_candidate in python3.11 python3.10 python3.9 python3; do
+        if command -v "$python_candidate" >/dev/null 2>&1 && "$python_candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+            export PYTHON_BIN="${PYTHON_BIN:-$python_candidate}"
+            break
+        fi
+    done
+    if [[ -z "${PYTHON_BIN:-}" ]]; then
+        printf -- 'Python >= 3.8 is required to build PyTorch for ml-cpp on SLES.\n' |& tee -a "$LOG_FILE"
+        exit 1
+    fi
+    if command -v gcc-14 >/dev/null 2>&1 && command -v g++-14 >/dev/null 2>&1; then
+        export CC="$(command -v gcc-14)" CXX="$(command -v g++-14)"
+        export CMAKE_C_COMPILER="$CC" CMAKE_CXX_COMPILER="$CXX"
+    fi
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
 
