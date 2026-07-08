@@ -686,7 +686,7 @@ new file mode 100755
 index 0000000..8103d8f
 --- /dev/null
 +++ b/s390x/build_ml_cpp.sh
-@@ -0,0 +1,732 @@
+@@ -0,0 +1,741 @@
 +#!/usr/bin/env bash
 +# ml-cpp build helpers sourced by build_elasticsearch.sh.
 +
