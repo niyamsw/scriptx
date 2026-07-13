@@ -327,8 +327,6 @@ function configureAndInstall() {
     git clone -b v1.2.0 https://github.com/osixia/docker-light-baseimage.git
     cd docker-light-baseimage/
     curl -sSL "${PATCH_URL}/docker-light-baseimage.patch" | git apply -
-    sed -i "s|^FROM .*debian:bookworm-slim|FROM ${DEBIAN_DOCKER_IMAGE}|" image/Dockerfile
-    pullDockerImageWithRetries "$DEBIAN_DOCKER_IMAGE"
     make build
 
     # Build osixia/openldap image for openldap-fixture:1.0
@@ -341,7 +339,7 @@ function configureAndInstall() {
 
     # Build ZSTD v1.5.5 for starting Elasticsearch server
     cd "$SOURCE_ROOT"
-    ZSTD_VERSION=1.5.5
+    ZSTD_VERSION=1.5.7
     rm -rf "$SOURCE_ROOT/zstd-$ZSTD_VERSION" "$SOURCE_ROOT/v$ZSTD_VERSION.tar.gz" "$SOURCE_ROOT/zstd-native-dep"
     wget https://github.com/facebook/zstd/archive/refs/tags/v$ZSTD_VERSION.tar.gz
     tar -xzvf v$ZSTD_VERSION.tar.gz
@@ -369,7 +367,7 @@ function configureAndInstall() {
     cd "$SOURCE_ROOT"
     mkdir -p "$SOURCE_ROOT/zstd-native-dep/artifacts/linux-s390x/"
     cp "$SOURCE_ROOT/zstd-$ZSTD_VERSION/lib/libzstd.so" "$SOURCE_ROOT/zstd-$ZSTD_VERSION/LICENSE" "$SOURCE_ROOT/zstd-native-dep/artifacts/linux-s390x/"
-    jar --create --no-manifest --file "$SOURCE_ROOT/zstd-native-dep/zstd-1.5.5-linux-s390x.jar" -C "$SOURCE_ROOT/zstd-native-dep/artifacts/" .
+    jar --create --no-manifest --file "$SOURCE_ROOT/zstd-native-dep/zstd-1.5.7-linux-s390x.jar" -C "$SOURCE_ROOT/zstd-native-dep/artifacts/" .
     sed -i "s#%S390X_ZSTD_DEP_DIR%#$SOURCE_ROOT/zstd-native-dep#" "$SOURCE_ROOT/elasticsearch/libs/native/libraries/build.gradle"
 
     # replace sha256sum of s390x jansi-2.4.0.jar
