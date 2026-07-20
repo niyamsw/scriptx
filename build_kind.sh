@@ -6,7 +6,6 @@
 # Download build script: curl -sSLO https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Kind/0.32.0/build_kind.sh
 # Execute build script: bash build_kind.sh    (provide -h for help)
 #
-USER_IN_GROUP_DOCKER=$(id -nGz $USER | tr '\0' '\n' | grep '^docker$' | wc -l)
 set -e
 set -o pipefail
 
@@ -39,13 +38,6 @@ function prepare() {
 		exit 1
 	fi
 
- 	if [[ "$USER_IN_GROUP_DOCKER" == "1" ]]; then
-        	printf "User $USER belongs to group docker\n" |& tee -a "${LOG_FILE}"
-        else
-        	printf "Please ensure User $USER belongs to group docker\n"
-        exit 1
-        fi
-	
 	if [[ "$FORCE" == "true" ]]; then
 		printf -- 'Force attribute provided hence continuing with install without confirmation message\n' |& tee -a "$LOG_FILE"
 	else
@@ -67,11 +59,6 @@ function prepare() {
 
 function configureAndInstall() {
     printf -- '\nConfiguration and Installation started \n'
-
-    # Start docker service
-    printf -- "Starting docker service\n"
-    sudo service docker start
-    sleep 20s
 
     cd "$SOURCE_ROOT"
     #Check if kind directory exists
@@ -173,10 +160,7 @@ case "$DISTRO" in
 "rhel-8.10" | "rhel-9.4" | "rhel-9.6" | "rhel-9.7")
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
-    sudo yum remove -y podman buildah
-    sudo yum install -y yum-utils
-    sudo yum-config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo
-    sudo yum install -y curl git wget make tar gcc glibc.s390x docker-ce docker-ce-cli containerd.io make which patch iproute-devel 2>&1 | tee -a "$LOG_FILE"
+    sudo yum install -y curl git wget make tar gcc glibc.s390x make which patch iproute-devel 2>&1 | tee -a "$LOG_FILE"
     export CC=gcc
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
@@ -184,7 +168,7 @@ case "$DISTRO" in
 "sles-15.7")
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
-    sudo zypper install -y curl git make wget tar gcc glibc-devel-static make which patch docker containerd docker-buildx iproute2 2>&1 | tee -a "$LOG_FILE"
+    sudo zypper install -y curl git make wget tar gcc glibc-devel-static make which patch iproute2 2>&1 | tee -a "$LOG_FILE"
     export CC=gcc
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
@@ -193,16 +177,7 @@ case "$DISTRO" in
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
     sudo apt-get update
-    sudo apt-get install -y ca-certificates curl gnupg iproute2
-    sudo install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    sudo chmod a+r /etc/apt/keyrings/docker.gpg
-    echo \
-        "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
-  "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" |
-        sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
-    sudo apt-get update
-    sudo apt-get install -y patch git make curl tar gcc wget make docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin clang 2>&1 | tee -a "$LOG_FILE"
+    sudo apt-get install -y ca-certificates curl gnupg iproute2 patch git make curl tar gcc wget make clang 2>&1 | tee -a "$LOG_FILE"
     export CC=gcc
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
@@ -213,4 +188,3 @@ case "$DISTRO" in
 esac
 
 gettingStarted |& tee -a "${LOG_FILE}"
-
