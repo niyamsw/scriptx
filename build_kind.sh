@@ -157,7 +157,7 @@ prepare #Check Prerequisite
 
 DISTRO="$ID-$VERSION_ID"
 case "$DISTRO" in
-"rhel-8.10" | "rhel-9.4" | "rhel-9.6" | "rhel-9.7")
+"rhel-10.2" | "rhel-10.1" | "rhel-10.0" | "rhel-9.8" | "rhel-9.7" | "rhel-9.6" | "rhel-8.10")
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
     sudo yum install -y curl git wget make tar gcc glibc.s390x make which patch iproute-devel 2>&1 | tee -a "$LOG_FILE"
@@ -165,7 +165,7 @@ case "$DISTRO" in
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
 
-"sles-15.7")
+"sles-15.7" | "sles-16.0")
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
     sudo zypper install -y curl git make wget tar gcc glibc-devel-static make which patch iproute2 2>&1 | tee -a "$LOG_FILE"
@@ -173,11 +173,11 @@ case "$DISTRO" in
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
     
-"ubuntu-22.04" | "ubuntu-24.04" | "ubuntu-25.10")
+"ubuntu-22.04" | "ubuntu-24.04")
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
     sudo apt-get update
-    sudo apt-get install -y ca-certificates curl gnupg iproute2 patch git make curl tar gcc wget make clang 2>&1 | tee -a "$LOG_FILE"
+    sudo apt-get install -y ca-certificates patch git make curl tar gcc wget make clang iproute2 2>&1 | tee -a "$LOG_FILE"
     export CC=gcc
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
