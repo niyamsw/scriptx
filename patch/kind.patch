@@ -25,6 +25,19 @@ index c67ae50..7d73921 100644
  OUTPUT?=
  PROGRESS=auto
  EXTRA_BUILD_OPT?=
+diff --git a/images/local-path-helper/stage-binary-and-deps.sh b/images/local-path-helper/stage-binary-and-deps.sh
+index 88fac24..8c6b8a8 100755
+--- a/images/local-path-helper/stage-binary-and-deps.sh
++++ b/images/local-path-helper/stage-binary-and-deps.sh
+@@ -78,7 +78,7 @@ binary_to_libraries() {
+     | awk '{print $1}' \
+     `# linux-vdso.so.1 is a special virtual shared object from the kernel` \
+     `# see: http://man7.org/linux/man-pages/man7/vdso.7.html` \
+-    | grep -v 'linux-vdso.so.1'
++    | grep -v -e 'linux-vdso.so.1' -e 'linux-vdso64.so.1'
+ }
+ 
+ # main script logic
 diff --git a/images/base/Dockerfile b/images/base/Dockerfile
 index 192e1ac..49f1dfc 100644
 --- a/images/base/Dockerfile
@@ -42,16 +55,3 @@ index 192e1ac..49f1dfc 100644
  # set by makefile to .go-version
  ARG GO_VERSION
  RUN eval "$(gimme "${GO_VERSION}")" \
-diff --git a/images/base/scripts/target-cc b/images/base/scripts/target-cc
-index f8226e1..011f9d8 100755
---- a/images/base/scripts/target-cc
-+++ b/images/base/scripts/target-cc
-@@ -23,6 +23,8 @@ case $TARGETARCH in
-     echo -n 'aarch64-linux-gnu-gcc' ;;
-   amd64)
-     echo -n 'x86_64-linux-gnu-gcc' ;;
-+  s390x)
-+    echo -n 'gcc' ;;
-   *)
-     exit 1 ;;
- esac
