@@ -78,6 +78,7 @@ function configureAndInstall() {
     make -C images/base quick REGISTRY=kindest
     make -C images/kindnetd REGISTRY=kindest TAG=v20260528-9350166c quick
     make -C images/local-path-provisioner REGISTRY=kindest TAG=v20260521-9fb22683 quick
+    make -C images/local-path-helper REGISTRY=kindest TAG=v20260131-7181c60a quick
 
     # Run tests
     runTest
@@ -157,7 +158,7 @@ prepare #Check Prerequisite
 
 DISTRO="$ID-$VERSION_ID"
 case "$DISTRO" in
-"rhel-10.2" | "rhel-10.1" | "rhel-10.0" | "rhel-9.8" | "rhel-9.7" | "rhel-9.6" | "rhel-8.10")
+"rhel-8.10" | "rhel-9.6" | "rhel-9.7" | "rhel-9.8" | "rhel-10.0" | "rhel-10.1" | "rhel-10.2")
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
     sudo yum install -y curl git wget make tar gcc glibc.s390x make which patch iproute-devel 2>&1 | tee -a "$LOG_FILE"
@@ -165,7 +166,7 @@ case "$DISTRO" in
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
 
-"sles-15.7" | "sles-16.0")
+"sles-15.7" | "sles-16")
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
     sudo zypper install -y curl git make wget tar gcc glibc-devel-static make which patch iproute2 2>&1 | tee -a "$LOG_FILE"
