@@ -178,7 +178,7 @@ case "$DISTRO" in
     printf -- "Installing %s %s for %s \n" "$PACKAGE_NAME" "$PACKAGE_VERSION" "$DISTRO" | tee -a "$LOG_FILE"
     printf -- "Installing dependencies ... it may take some time.\n"
     sudo apt-get update
-    sudo apt-get install -y ca-certificates patch git make curl tar gcc wget make clang iproute2 2>&1 | tee -a "$LOG_FILE"
+    sudo apt-get install -y ca-certificates patch git make curl tar gcc wget iproute2 2>&1 | tee -a "$LOG_FILE"
     export CC=gcc
     configureAndInstall |& tee -a "$LOG_FILE"
     ;;
