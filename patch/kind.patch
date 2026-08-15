@@ -55,3 +55,15 @@ index 192e1ac..49f1dfc 100644
  # set by makefile to .go-version
  ARG GO_VERSION
  RUN eval "$(gimme "${GO_VERSION}")" \
+diff --git a/pkg/cluster/internal/kubeadm/config.go b/pkg/cluster/internal/kubeadm/config.go
+index 6cf1f9c..1176fe4 100644
+--- a/pkg/cluster/internal/kubeadm/config.go
++++ b/pkg/cluster/internal/kubeadm/config.go
+@@ -600,6 +600,7 @@ metadata:
+ cgroupDriver: {{ .CgroupDriver }}
+ cgroupRoot: /kubelet
+ failSwapOn: false
++failCgroupV1: false
+ # configure ipv6 addresses in IPv6 mode
+ {{ if .IPv6 -}}
+ address: "::"
