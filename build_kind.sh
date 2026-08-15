@@ -68,13 +68,13 @@ function configureAndInstall() {
 
     git clone -b "${PACKAGE_VERSION}" https://github.com/kubernetes-sigs/kind.git
     cd kind
+    printf -- "\nApplying patch for kind ... \n"
+    curl -sSL $PATCH_URL/kind.patch | git apply --ignore-whitespace -
     printf -- "\nBuilding kind binary ... \n"
     make build
     printf -- 'Build kind success \n'
     export PATH=${SOURCE_ROOT}/kind/bin:$PATH
     kind version
-    printf -- "\nApplying patch for kind ... \n"
-    curl -sSL $PATCH_URL/kind.patch | git apply --ignore-whitespace -
     make -C images/base quick REGISTRY=kindest
     make -C images/kindnetd REGISTRY=kindest TAG=v20260528-9350166c quick
     make -C images/local-path-provisioner REGISTRY=kindest TAG=v20260521-9fb22683 quick
