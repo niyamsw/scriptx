@@ -55,6 +55,17 @@ index 192e1ac..49f1dfc 100644
  # set by makefile to .go-version
  ARG GO_VERSION
  RUN eval "$(gimme "${GO_VERSION}")" \
+diff --git a/images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf b/images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf
+index afecf3b..6e219c0 100644
+--- a/images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf
++++ b/images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf
+@@ -5,4 +5,5 @@
+ ExecStartPre=/bin/sh -euc "if [ -f /sys/fs/cgroup/cgroup.controllers ]; then /kind/bin/create-kubelet-cgroup-v2.sh; fi"
+ # on WSL2 (and potentially other distros without systemd) /sys/fs/cgroup/systemd is created after the entrypoint, during /sbin/init.
+ # This eventually leads to kubelet failing to start, see: https://github.com/kubernetes-sigs/kind/issues/2323
+-ExecStartPre=/bin/sh -euc "if [ ! -f /sys/fs/cgroup/cgroup.controllers ] && [ ! -d /sys/fs/cgroup/systemd/kubelet ]; then mkdir -p /sys/fs/cgroup/systemd/kubelet; fi"
++# Kubernetes 1.36 on cgroup v1 also expects the systemd kubepods slice below the kubelet slice to exist.
++ExecStartPre=/bin/sh -euc "if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then mkdir -p /sys/fs/cgroup/systemd/kubelet /sys/fs/cgroup/systemd/kubelet.slice/kubelet-kubepods.slice; fi"
 diff --git a/pkg/cluster/internal/kubeadm/config.go b/pkg/cluster/internal/kubeadm/config.go
 index 6cf1f9c..1176fe4 100644
 --- a/pkg/cluster/internal/kubeadm/config.go
