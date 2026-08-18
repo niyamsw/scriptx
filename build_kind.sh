@@ -14,7 +14,6 @@ PACKAGE_VERSION="v0.32.0"
 FORCE="false"
 export SOURCE_ROOT=$(pwd)
 #PATCH_URL="https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Kind/0.32.0/patch"
-PATCH_URL="https://raw.githubusercontent.com/niyamsw/scriptx/refs/heads/main/patch"
 GO_DEFAULT="$SOURCE_ROOT/go"
 GO_FLAG="DEFAULT"
 LOGDIR="$SOURCE_ROOT/logs"
@@ -77,7 +76,7 @@ function configureAndInstall() {
     kind version
     make -C images/base quick REGISTRY=kindest
     make -C images/kindnetd REGISTRY=kindest TAG=v20260528-9350166c quick
-    make -C images/local-path-provisioner REGISTRY=kindest TAG=v20260521-9fb22683 quick
+    # local-path-provisioner is pulled from upstream docker.io/rancher/local-path-provisioner:v0.0.34, which supports s390x.
     make -C images/local-path-helper REGISTRY=kindest TAG=v20260131-7181c60a quick
 
     # Run tests
