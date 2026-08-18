@@ -14,6 +14,7 @@ PACKAGE_VERSION="v0.32.0"
 FORCE="false"
 export SOURCE_ROOT=$(pwd)
 #PATCH_URL="https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Kind/0.32.0/patch"
+PATCH_URL="https://raw.githubusercontent.com/niyamsw/scriptx/refs/heads/main/patch"
 GO_DEFAULT="$SOURCE_ROOT/go"
 GO_FLAG="DEFAULT"
 LOGDIR="$SOURCE_ROOT/logs"
