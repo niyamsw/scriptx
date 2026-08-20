@@ -14,7 +14,6 @@ PACKAGE_VERSION="v0.32.0"
 FORCE="false"
 export SOURCE_ROOT=$(pwd)
 #PATCH_URL="https://raw.githubusercontent.com/linux-on-ibm-z/scripts/master/Kind/0.32.0/patch"
-PATCH_URL="https://raw.githubusercontent.com/niyamsw/scriptx/refs/heads/main/patch"
 GO_DEFAULT="$SOURCE_ROOT/go"
 GO_FLAG="DEFAULT"
 LOGDIR="$SOURCE_ROOT/logs"
@@ -73,6 +72,10 @@ function configureAndInstall() {
     if [[ "$DISTRO" == "rhel-8.10" ]]; then
         printf -- "\nAllowing cgroup v1 for RHEL 8.10 ... \n"
         sed -i '/failSwapOn: false/a failCgroupV1: false' pkg/cluster/internal/kubeadm/config.go
+        printf -- "\nAdding RHEL 8.10 cgroup v1 kubelet pre-start fix ... \n"
+        cat >> images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf <<'EOF_RHEL810_CGROUP_FIX'
+ExecStartPre=/bin/sh -euc "if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then mkdir -p /sys/fs/cgroup/systemd/kubelet /sys/fs/cgroup/systemd/kubelet.slice/kubelet-kubepods.slice; fi"
+EOF_RHEL810_CGROUP_FIX
     fi
     printf -- "\nBuilding kind binary ... \n"
     make build
