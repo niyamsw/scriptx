@@ -70,14 +70,18 @@ function configureAndInstall() {
     cd kind
     printf -- "\nApplying patch for kind ... \n"
     curl -sSL $PATCH_URL/kind.patch | git apply --ignore-whitespace -
+    if [[ "$DISTRO" == "rhel-8.10" ]]; then
+        printf -- "\nAllowing cgroup v1 for RHEL 8.10 ... \n"
+        sed -i '/failSwapOn: false/a failCgroupV1: false' pkg/cluster/internal/kubeadm/config.go
+    fi
     printf -- "\nBuilding kind binary ... \n"
     make build
     printf -- 'Build kind success \n'
     export PATH=${SOURCE_ROOT}/kind/bin:$PATH
     kind version
-    make -C images/base quick REGISTRY=kindest
+    make -C images/base quick REGISTRY=kindest TAG=v20260601-995e8fa5
     make -C images/kindnetd REGISTRY=kindest TAG=v20260528-9350166c quick
-    # local-path-provisioner is pulled from upstream docker.io/rancher/local-path-provisioner:v0.0.34, which supports s390x.
+    make -C images/local-path-provisioner REGISTRY=kindest TAG=v20260521-9fb22683 quick
     make -C images/local-path-helper REGISTRY=kindest TAG=v20260131-7181c60a quick
 
     # Run tests
