@@ -1,30 +1,3 @@
-diff --git a/images/Makefile.common.in b/images/Makefile.common.in
-index c67ae50..7d73921 100644
---- a/images/Makefile.common.in
-+++ b/images/Makefile.common.in
-@@ -17,18 +17,18 @@
- # get image name from directory we're building
- IMAGE_NAME?=$(notdir $(CURDIR))
- # docker image registry, default to upstream
--REGISTRY?=gcr.io/k8s-staging-kind
-+REGISTRY?=kindest
- # for appending build-meta like "_containerd-v1.7.1"
- TAG_SUFFIX?=
- # tag based on date-sha
--TAG?=$(shell echo "$$(date +v%Y%m%d)-$$(git log --pretty=format:'%h' -n 1)")
-+TAG?=v20260601-995e8fa5
- # the full image tag
--IMAGE?=$(REGISTRY)/$(IMAGE_NAME):$(TAG)$(TAG_SUFFIX)
-+IMAGE?=$(REGISTRY)/$(IMAGE_NAME):$(TAG)
- # Go version to use, respected by images that build go binaries
- GO_VERSION=$(shell cat $(CURDIR)/../../.go-version | head -n1)
- 
- # build with buildx
--PLATFORMS?=linux/amd64,linux/arm64
-+PLATFORMS?=linux/s390x
- OUTPUT?=
- PROGRESS=auto
- EXTRA_BUILD_OPT?=
 diff --git a/images/local-path-helper/stage-binary-and-deps.sh b/images/local-path-helper/stage-binary-and-deps.sh
 index 88fac24..8c6b8a8 100755
 --- a/images/local-path-helper/stage-binary-and-deps.sh
@@ -42,59 +15,43 @@ diff --git a/images/base/Dockerfile b/images/base/Dockerfile
 index 192e1ac..49f1dfc 100644
 --- a/images/base/Dockerfile
 +++ b/images/base/Dockerfile
-@@ -110,10 +110,9 @@ COPY --chmod=0755 scripts/third_party/gimme/gimme /usr/local/bin/
+@@ -110,10 +110,22 @@ COPY --chmod=0755 scripts/third_party/gimme/gimme /usr/local/bin/
  COPY --chmod=0755 scripts/target-cc /usr/local/bin/
  # tools needed at build-time only
- # first ensure we can install packages for both architectures
+-# first ensure we can install packages for both architectures
++# install native/cross dependencies only for the requested target architecture
 -RUN dpkg --add-architecture arm64 && dpkg --add-architecture amd64 \
-+RUN dpkg --add-architecture s390x \
-     && clean-install bash ca-certificates curl git make pkg-config \
+-    && clean-install bash ca-certificates curl git make pkg-config \
 -    build-essential crossbuild-essential-amd64 crossbuild-essential-arm64 \
 -    libseccomp-dev:amd64 libseccomp-dev:arm64
-+    build-essential libseccomp-dev
++ARG TARGETARCH
++RUN set -eux; \
++    build_arch="$(dpkg --print-architecture)"; \
++    packages="bash ca-certificates curl git make pkg-config build-essential"; \
++    case "$TARGETARCH" in \
++      amd64|arm64|s390x) \
++        if [ "$build_arch" = "$TARGETARCH" ]; then \
++          packages="$packages libseccomp-dev"; \
++        else \
++          dpkg --add-architecture "$TARGETARCH"; \
++          packages="$packages crossbuild-essential-$TARGETARCH libseccomp-dev:$TARGETARCH"; \
++        fi; \
++        ;; \
++      *) echo "unsupported TARGETARCH=$TARGETARCH"; exit 1 ;; \
++    esac; \
++    clean-install $packages
  # set by makefile to .go-version
  ARG GO_VERSION
  RUN eval "$(gimme "${GO_VERSION}")" \
-diff --git a/images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf b/images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf
-index afecf3b..6e219c0 100644
---- a/images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf
-+++ b/images/base/files/etc/systemd/system/kubelet.service.d/11-kind.conf
-@@ -5,4 +5,5 @@
- ExecStartPre=/bin/sh -euc "if [ -f /sys/fs/cgroup/cgroup.controllers ]; then /kind/bin/create-kubelet-cgroup-v2.sh; fi"
- # on WSL2 (and potentially other distros without systemd) /sys/fs/cgroup/systemd is created after the entrypoint, during /sbin/init.
- # This eventually leads to kubelet failing to start, see: https://github.com/kubernetes-sigs/kind/issues/2323
--ExecStartPre=/bin/sh -euc "if [ ! -f /sys/fs/cgroup/cgroup.controllers ] && [ ! -d /sys/fs/cgroup/systemd/kubelet ]; then mkdir -p /sys/fs/cgroup/systemd/kubelet; fi"
-+# Kubernetes 1.36 on cgroup v1 also expects the systemd kubepods slice below the kubelet slice to exist.
-+ExecStartPre=/bin/sh -euc "if [ ! -f /sys/fs/cgroup/cgroup.controllers ]; then mkdir -p /sys/fs/cgroup/systemd/kubelet /sys/fs/cgroup/systemd/kubelet.slice/kubelet-kubepods.slice; fi"
-diff --git a/pkg/cluster/internal/kubeadm/config.go b/pkg/cluster/internal/kubeadm/config.go
-index 6cf1f9c..1176fe4 100644
---- a/pkg/cluster/internal/kubeadm/config.go
-+++ b/pkg/cluster/internal/kubeadm/config.go
-@@ -600,6 +600,7 @@ metadata:
- cgroupDriver: {{ .CgroupDriver }}
- cgroupRoot: /kubelet
- failSwapOn: false
-+failCgroupV1: false
- # configure ipv6 addresses in IPv6 mode
- {{ if .IPv6 -}}
- address: "::"
-diff --git a/pkg/build/nodeimage/const_storage.go b/pkg/build/nodeimage/const_storage.go
-index 2d1db53..87101d0 100644
---- a/pkg/build/nodeimage/const_storage.go
-+++ b/pkg/build/nodeimage/const_storage.go
-@@ -20,13 +20,13 @@ package nodeimage
- The default PV driver manifest and images are provisionally rancher.io/local-path-provisioner
- NOTE: we have customized it in the following ways:
- - storage is under /var instead of /opt
--- our own image and helper image
-+- upstream local-path-provisioner image and our own helper image
- - schedule to linux nodes only
- - install as the default storage class
- - tolerate control plane scheduling taints
- */
- 
--const storageProvisionerImage = "docker.io/kindest/local-path-provisioner:v20260521-9fb22683"
-+const storageProvisionerImage = "docker.io/rancher/local-path-provisioner:v0.0.34"
- const storageHelperImage = "docker.io/kindest/local-path-helper:v20260131-7181c60a"
- 
- // image we need to preload
+diff --git a/images/base/scripts/target-cc b/images/base/scripts/target-cc
+--- a/images/base/scripts/target-cc
++++ b/images/base/scripts/target-cc
+@@ -24,6 +24,8 @@ case $TARGETARCH in
+     echo -n 'aarch64-linux-gnu-gcc' ;;
+   amd64)
+     echo -n 'x86_64-linux-gnu-gcc' ;;
++  s390x)
++    echo -n 's390x-linux-gnu-gcc' ;;
+   *)
+     exit 1 ;;
+ esac
